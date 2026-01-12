@@ -1,3 +1,4 @@
+
 const { Telegraf, Scenes, session, Markup } = require('telegraf');
 const { MongoClient, ObjectId } = require('mongodb');
 const crypto = require('crypto');
@@ -9,11 +10,11 @@ require('dotenv').config();
 // CONFIGURATION
 // ==========================================
 
-// Cloudinary configuration
+// Cloudinary configuration - use environment variables
 cloudinary.config({
-  cloud_name: 'dneusgyzc',
-  api_key: '474713292161728',
-  api_secret: 'DHJmvD784FEVmeOt1-K8XeNhCQQ'
+  cloud_name: process.env.CLOUDINARY_CLOUD_NAME || 'dneusgyzc',
+  api_key: process.env.CLOUDINARY_API_KEY || '474713292161728',
+  api_secret: process.env.CLOUDINARY_API_SECRET || 'DHJmvD784FEVmeOt1-K8XeNhCQQ'
 });
 
 // Initialize bot
@@ -402,40 +403,36 @@ function escapeMarkdown(text) {
         .replace(/\!/g, '\\!');
 }
 
-// Format HTML for display (shows tags only when needed)
+// Format HTML for display (removed HTML tags)
 function formatHTMLForDisplay(text, showTags = false) {
     if (!text) return '';
     
     if (showTags) {
         // Show with code tags for copying
-        return `<code>${escapeMarkdown(text)}</code>`;
+        return `\`${escapeMarkdown(text)}\``;
     } else {
-        // Remove HTML tags for display but keep content
+        // Remove all HTML tags for display
         return text
-            .replace(/<b>(.*?)<\/b>/gi, '*$1*')
-            .replace(/<i>(.*?)<\/i>/gi, '_$1_')
-            .replace(/<u>(.*?)<\/u>/gi, '$1')
-            .replace(/<code>(.*?)<\/code>/gi, '`$1`')
-            .replace(/<pre>(.*?)<\/pre>/gis, '```\n$1\n```')
-            .replace(/<a href="(.*?)">(.*?)<\/a>/gi, '[$2]($1)')
-            .replace(/<[^>]*>/g, '')
+            .replace(/<[^>]*>/g, '') // Remove all HTML tags
             .replace(/&amp;/g, '&')
             .replace(/&lt;/g, '<')
-            .replace(/&gt;/g, '>');
+            .replace(/&gt;/g, '>')
+            .replace(/&quot;/g, '"')
+            .replace(/&#39;/g, "'");
     }
 }
 
-// Safe send message with HTML parse mode
+// Safe send message with Markdown parse mode
 async function safeSendMessage(ctx, text, options = {}) {
     try {
         return await ctx.reply(text, { 
-            parse_mode: 'HTML',
+            parse_mode: 'Markdown',
             disable_web_page_preview: true,
             ...options 
         });
     } catch (error) {
         console.error('Error sending message:', error.message);
-        // Try without HTML parsing
+        // Try without Markdown parsing
         return await ctx.reply(text, { 
             ...options,
             disable_web_page_preview: true 
@@ -443,17 +440,17 @@ async function safeSendMessage(ctx, text, options = {}) {
     }
 }
 
-// Safe edit message with HTML parse mode
+// Safe edit message with Markdown parse mode
 async function safeEditMessage(ctx, text, options = {}) {
     try {
         return await ctx.editMessageText(text, { 
-            parse_mode: 'HTML',
+            parse_mode: 'Markdown',
             disable_web_page_preview: true,
             ...options 
         });
     } catch (error) {
         console.error('Error editing message:', error.message);
-        // Try without HTML parsing
+        // Try without Markdown parsing
         return await ctx.editMessageText(text, { 
             ...options,
             disable_web_page_preview: true 
@@ -506,7 +503,7 @@ async function notifyAdmin(text, excludeMuted = true) {
         const promises = allAdmins.map(async (adminId) => {
             try {
                 await bot.telegram.sendMessage(adminId, text, { 
-                    parse_mode: 'HTML',
+                    parse_mode: 'Markdown',
                     disable_web_page_preview: true 
                 });
             } catch (error) {
@@ -992,7 +989,7 @@ bot.start(async (ctx) => {
                         await bot.telegram.sendMessage(
                             referrer.userId,
                             `🎉 *New Referral!*\n\n👤 ${user.first_name || 'New user'} joined using your referral link!\n💰 You earned ${formatCurrency(referBonus)} referral bonus!`,
-                            { parse_mode: 'HTML' }
+                            { parse_mode: 'Markdown' }
                         );
                     } catch (error) {
                         console.error('Failed to notify referrer:', error);
@@ -1124,7 +1121,7 @@ async function showStartScreen(ctx) {
         // Send message with image
         await ctx.replyWithPhoto(startImage, {
             caption: startMessage,
-            parse_mode: 'HTML',
+            parse_mode: 'Markdown',
             reply_markup: { inline_keyboard: buttons }
         });
         
@@ -1158,7 +1155,7 @@ async function showMainMenu(ctx) {
         const hasJoined = await hasJoinedAllChannels(userId);
         if (!hasJoined) {
             await safeSendMessage(ctx, '⚠️ *Please join all required channels first!*\n\nYou must join all channels marked as "Must Join" to access earning features.', {
-                parse_mode: 'HTML',
+                parse_mode: 'Markdown',
                 reply_markup: {
                     inline_keyboard: [[
                         { text: '🔙 Back to Start', callback_data: 'back_to_start' }
@@ -1231,7 +1228,7 @@ async function showMainMenu(ctx) {
         
         await ctx.replyWithPhoto(menuImage, {
             caption: menuMessage,
-            parse_mode: 'HTML',
+            parse_mode: 'Markdown',
             reply_markup: { inline_keyboard: keyboard }
         });
         
@@ -1259,6 +1256,17 @@ bot.action('back_to_start', async (ctx) => {
         await showStartScreen(ctx);
     } catch (error) {
         console.error('Back to start error:', error);
+        await ctx.answerCbQuery('❌ Error');
+    }
+});
+
+// Back to Menu
+bot.action('back_to_menu', async (ctx) => {
+    try {
+        await ctx.deleteMessage().catch(() => {});
+        await showMainMenu(ctx);
+    } catch (error) {
+        console.error('Back to menu error:', error);
         await ctx.answerCbQuery('❌ Error');
     }
 });
@@ -1317,7 +1325,7 @@ bot.action('user_balance', async (ctx) => {
         
         await ctx.deleteMessage().catch(() => {});
         await safeSendMessage(ctx, balanceText, {
-            parse_mode: 'HTML',
+            parse_mode: 'Markdown',
             reply_markup: { inline_keyboard: keyboard }
         });
         
@@ -1390,7 +1398,7 @@ bot.action('view_all_transactions', async (ctx) => {
         );
         
         await safeEditMessage(ctx, transactionsText, {
-            parse_mode: 'HTML',
+            parse_mode: 'Markdown',
             reply_markup: { inline_keyboard: keyboard }
         });
         
@@ -1459,7 +1467,7 @@ bot.action('user_profile', async (ctx) => {
                 
                 await ctx.replyWithPhoto(fileLink.href, {
                     caption: profileText,
-                    parse_mode: 'HTML',
+                    parse_mode: 'Markdown',
                     reply_markup: {
                         inline_keyboard: [
                             [{ text: '📤 Share Referral', callback_data: 'user_refer' }],
@@ -1475,7 +1483,7 @@ bot.action('user_profile', async (ctx) => {
                 
                 await ctx.replyWithPhoto(profileImage, {
                     caption: profileText,
-                    parse_mode: 'HTML',
+                    parse_mode: 'Markdown',
                     reply_markup: {
                         inline_keyboard: [
                             [{ text: '📤 Share Referral', callback_data: 'user_refer' }],
@@ -1489,7 +1497,7 @@ bot.action('user_profile', async (ctx) => {
             // If can't get photo, send text only
             await ctx.deleteMessage().catch(() => {});
             await safeSendMessage(ctx, profileText, {
-                parse_mode: 'HTML',
+                parse_mode: 'Markdown',
                 reply_markup: {
                     inline_keyboard: [
                         [{ text: '📤 Share Referral', callback_data: 'user_refer' }],
@@ -1529,7 +1537,7 @@ bot.action('user_set_wallet', async (ctx) => {
         walletText += `Type "cancel" to cancel.`;
         
         await safeSendMessage(ctx, walletText, {
-            parse_mode: 'HTML',
+            parse_mode: 'Markdown',
             reply_markup: {
                 inline_keyboard: [[
                     { text: '🔙 Back to Menu', callback_data: 'back_to_menu' }
@@ -1563,7 +1571,7 @@ scenes.setWallet.on('text', async (ctx) => {
         const upiRegex = /^[a-zA-Z0-9.\-_]{2,256}@[a-zA-Z]{2,64}$/;
         if (!upiRegex.test(walletInput)) {
             await safeSendMessage(ctx, '❌ *Invalid UPI ID format!*\n\nPlease enter a valid UPI ID like:\n\`user@upi\`\n\`user@oksbi\`\n\`user@paytm\`\n\nType "cancel" to cancel.', {
-                parse_mode: 'HTML'
+                parse_mode: 'Markdown'
             });
             return;
         }
@@ -1575,7 +1583,7 @@ scenes.setWallet.on('text', async (ctx) => {
         );
         
         await safeSendMessage(ctx, `✅ *Wallet Updated Successfully!*\n\nYour wallet has been set to:\n\`${walletInput}\`\n\nYou can now withdraw your earnings.`, {
-            parse_mode: 'HTML',
+            parse_mode: 'Markdown',
             reply_markup: {
                 inline_keyboard: [[
                     { text: '💳 Withdraw Funds', callback_data: 'user_withdraw' },
@@ -1619,7 +1627,7 @@ bot.action('user_withdraw', async (ctx) => {
         // Check if wallet is set
         if (!userData.wallet) {
             await safeSendMessage(ctx, `❌ *Wallet Not Set!*\n\nPlease set your wallet address first to withdraw funds.\n\nMin withdrawal: ${formatCurrency(minAmount)}`, {
-                parse_mode: 'HTML',
+                parse_mode: 'Markdown',
                 reply_markup: {
                     inline_keyboard: [
                         [{ text: '🏦 Set Wallet Now', callback_data: 'user_set_wallet' }],
@@ -1634,7 +1642,7 @@ bot.action('user_withdraw', async (ctx) => {
         const userBalance = userData.balance || 0;
         if (userBalance < minAmount) {
             await safeSendMessage(ctx, `❌ *Insufficient Balance!*\n\nYour balance: ${formatCurrency(userBalance)}\nMin withdrawal: ${formatCurrency(minAmount)}\n\nComplete more tasks or referrals to earn more!`, {
-                parse_mode: 'HTML',
+                parse_mode: 'Markdown',
                 reply_markup: {
                     inline_keyboard: [
                         [{ text: '📋 View Tasks', callback_data: 'user_tasks' }],
@@ -1659,7 +1667,7 @@ bot.action('user_withdraw', async (ctx) => {
         
         await ctx.deleteMessage().catch(() => {});
         await safeSendMessage(ctx, withdrawText, {
-            parse_mode: 'HTML',
+            parse_mode: 'Markdown',
             reply_markup: {
                 inline_keyboard: [[
                     { text: '🔙 Back to Menu', callback_data: 'back_to_menu' }
@@ -1710,21 +1718,21 @@ scenes.withdrawAmount.on('text', async (ctx) => {
         const amount = parseFloat(amountInput);
         if (isNaN(amount) || amount <= 0) {
             await safeSendMessage(ctx, '❌ *Invalid amount!*\n\nPlease enter a valid number.\nExample: 100, 500, 1000\n\nType "cancel" to cancel.', {
-                parse_mode: 'HTML'
+                parse_mode: 'Markdown'
             });
             return;
         }
         
         if (amount < withdrawalInfo.minAmount) {
             await safeSendMessage(ctx, `❌ *Amount too low!*\n\nMinimum withdrawal amount is ${formatCurrency(withdrawalInfo.minAmount)}.\n\nType "cancel" to cancel.`, {
-                parse_mode: 'HTML'
+                parse_mode: 'Markdown'
             });
             return;
         }
         
         if (amount > withdrawalInfo.maxAmount) {
             await safeSendMessage(ctx, `❌ *Amount too high!*\n\nMaximum withdrawal amount is ${formatCurrency(withdrawalInfo.maxAmount)}.\n\nType "cancel" to cancel.`, {
-                parse_mode: 'HTML'
+                parse_mode: 'Markdown'
             });
             return;
         }
@@ -1735,7 +1743,7 @@ scenes.withdrawAmount.on('text', async (ctx) => {
         
         if (amount > userBalance) {
             await safeSendMessage(ctx, `❌ *Insufficient balance!*\n\nYour balance: ${formatCurrency(userBalance)}\nRequested: ${formatCurrency(amount)}\n\nType "cancel" to cancel.`, {
-                parse_mode: 'HTML'
+                parse_mode: 'Markdown'
             });
             return;
         }
@@ -1784,7 +1792,7 @@ scenes.withdrawAmount.on('text', async (ctx) => {
         confirmText += `You will be notified once it's processed.`;
         
         await safeSendMessage(ctx, confirmText, {
-            parse_mode: 'HTML',
+            parse_mode: 'Markdown',
             reply_markup: {
                 inline_keyboard: [
                     [{ text: '📋 View Withdrawal Status', callback_data: 'view_withdrawal_status' }],
@@ -1809,7 +1817,7 @@ scenes.withdrawAmount.on('text', async (ctx) => {
         const notifyPromises = activeAdmins.map(async (adminId) => {
             try {
                 await bot.telegram.sendMessage(adminId, adminNotification, {
-                    parse_mode: 'HTML',
+                    parse_mode: 'Markdown',
                     reply_markup: {
                         inline_keyboard: [[
                             { text: '✅ Process Request', callback_data: `process_withdrawal_${requestId}` }
@@ -1876,7 +1884,7 @@ bot.action('view_withdrawal_status', async (ctx) => {
         ];
         
         await safeEditMessage(ctx, statusText, {
-            parse_mode: 'HTML',
+            parse_mode: 'Markdown',
             reply_markup: { inline_keyboard: keyboard }
         });
         
@@ -1935,7 +1943,7 @@ bot.action('user_refer', async (ctx) => {
         
         await ctx.deleteMessage().catch(() => {});
         await safeSendMessage(ctx, referText, {
-            parse_mode: 'HTML',
+            parse_mode: 'Markdown',
             reply_markup: { inline_keyboard: keyboard }
         });
         
@@ -2019,7 +2027,7 @@ bot.action('user_referrals', async (ctx) => {
         
         await ctx.deleteMessage().catch(() => {});
         await safeSendMessage(ctx, referralsText, {
-            parse_mode: 'HTML',
+            parse_mode: 'Markdown',
             reply_markup: { inline_keyboard: keyboard }
         });
         
@@ -2057,7 +2065,7 @@ bot.action('user_bonus', async (ctx) => {
         
         if (!bonusSettings.enabled) {
             await safeSendMessage(ctx, '❌ *Bonus feature is currently disabled.*\n\nPlease check back later or contact support for more information.', {
-                parse_mode: 'HTML',
+                parse_mode: 'Markdown',
                 reply_markup: {
                     inline_keyboard: [[
                         { text: '🔙 Back to Menu', callback_data: 'back_to_menu' }
@@ -2108,13 +2116,13 @@ bot.action('user_bonus', async (ctx) => {
             
             await ctx.replyWithPhoto(bonusImage, {
                 caption: bonusText,
-                parse_mode: 'HTML',
+                parse_mode: 'Markdown',
                 reply_markup: { inline_keyboard: keyboard }
             });
         } else {
             await ctx.deleteMessage().catch(() => {});
             await safeSendMessage(ctx, bonusText, {
-                parse_mode: 'HTML',
+                parse_mode: 'Markdown',
                 reply_markup: { inline_keyboard: keyboard }
             });
         }
@@ -2182,7 +2190,7 @@ bot.action('claim_bonus', async (ctx) => {
         ];
         
         await safeEditMessage(ctx, successText, {
-            parse_mode: 'HTML',
+            parse_mode: 'Markdown',
             reply_markup: { inline_keyboard: keyboard }
         });
         
@@ -2209,7 +2217,7 @@ bot.action('user_gift_code', async (ctx) => {
         
         await ctx.deleteMessage().catch(() => {});
         await safeSendMessage(ctx, giftText, {
-            parse_mode: 'HTML',
+            parse_mode: 'Markdown',
             reply_markup: {
                 inline_keyboard: [[
                     { text: '🔙 Back to Menu', callback_data: 'back_to_menu' }
@@ -2246,7 +2254,7 @@ scenes.enterGiftCode.on('text', async (ctx) => {
         
         if (!giftCode) {
             await safeSendMessage(ctx, '❌ *Invalid or expired gift code!*\n\nPlease check the code and try again.\n\nType "cancel" to cancel.', {
-                parse_mode: 'HTML'
+                parse_mode: 'Markdown'
             });
             return;
         }
@@ -2254,7 +2262,7 @@ scenes.enterGiftCode.on('text', async (ctx) => {
         // Check expiry
         if (giftCode.expiresAt && new Date(giftCode.expiresAt) < new Date()) {
             await safeSendMessage(ctx, '❌ *This gift code has expired!*\n\nType "cancel" to cancel.', {
-                parse_mode: 'HTML'
+                parse_mode: 'Markdown'
             });
             return;
         }
@@ -2262,7 +2270,7 @@ scenes.enterGiftCode.on('text', async (ctx) => {
         // Check usage limit
         if (giftCode.maxUses && giftCode.usedCount >= giftCode.maxUses) {
             await safeSendMessage(ctx, '❌ *This gift code has reached maximum usage limit!*\n\nType "cancel" to cancel.', {
-                parse_mode: 'HTML'
+                parse_mode: 'Markdown'
             });
             return;
         }
@@ -2273,7 +2281,7 @@ scenes.enterGiftCode.on('text', async (ctx) => {
         
         if (usedCodes.includes(codeInput)) {
             await safeSendMessage(ctx, '❌ *You have already used this gift code!*\n\nType "cancel" to cancel.', {
-                parse_mode: 'HTML'
+                parse_mode: 'Markdown'
             });
             return;
         }
@@ -2328,7 +2336,7 @@ scenes.enterGiftCode.on('text', async (ctx) => {
         ];
         
         await safeSendMessage(ctx, successText, {
-            parse_mode: 'HTML',
+            parse_mode: 'Markdown',
             reply_markup: { inline_keyboard: keyboard }
         });
         
@@ -2418,7 +2426,7 @@ bot.action('user_tasks', async (ctx) => {
         
         await ctx.deleteMessage().catch(() => {});
         await safeSendMessage(ctx, tasksText, {
-            parse_mode: 'HTML',
+            parse_mode: 'Markdown',
             reply_markup: { inline_keyboard: keyboard }
         });
         
@@ -2482,7 +2490,7 @@ bot.action(/^view_task_(.+)$/, async (ctx) => {
             // Send first image with caption
             await ctx.replyWithPhoto(task.images[0], {
                 caption: taskText,
-                parse_mode: 'HTML',
+                parse_mode: 'Markdown',
                 reply_markup: { inline_keyboard: keyboard }
             });
             
@@ -2492,7 +2500,7 @@ bot.action(/^view_task_(.+)$/, async (ctx) => {
             }
         } else {
             await safeEditMessage(ctx, taskText, {
-                parse_mode: 'HTML',
+                parse_mode: 'Markdown',
                 reply_markup: { inline_keyboard: keyboard }
             });
         }
@@ -2554,7 +2562,7 @@ bot.action(/^start_task_(.+)$/, async (ctx) => {
         ];
         
         await safeEditMessage(ctx, taskStartText, {
-            parse_mode: 'HTML',
+            parse_mode: 'Markdown',
             reply_markup: { inline_keyboard: keyboard }
         });
         
@@ -2592,7 +2600,7 @@ bot.action(/^upload_screenshot_(\d+)$/, async (ctx) => {
         uploadText += `Type "cancel" to cancel the task.`;
         
         await safeEditMessage(ctx, uploadText, {
-            parse_mode: 'HTML'
+            parse_mode: 'Markdown'
         });
         
         // Enter task submission scene
@@ -2669,7 +2677,7 @@ scenes.taskSubmission.on(['photo', 'text'], async (ctx) => {
             ];
             
             await safeSendMessage(ctx, nextText, {
-                parse_mode: 'HTML',
+                parse_mode: 'Markdown',
                 reply_markup: { inline_keyboard: keyboard }
             });
             
@@ -2740,7 +2748,7 @@ async function submitTaskCompletion(ctx) {
         ];
         
         await safeSendMessage(ctx, successText, {
-            parse_mode: 'HTML',
+            parse_mode: 'Markdown',
             reply_markup: { inline_keyboard: keyboard }
         });
         
@@ -2761,7 +2769,7 @@ async function submitTaskCompletion(ctx) {
         const notifyPromises = activeAdmins.map(async (adminId) => {
             try {
                 await bot.telegram.sendMessage(adminId, adminNotification, {
-                    parse_mode: 'HTML',
+                    parse_mode: 'Markdown',
                     reply_markup: {
                         inline_keyboard: [[
                             { text: '✅ Review Submission', callback_data: `review_submission_${submissionId}` }
@@ -2853,7 +2861,7 @@ bot.action('task_history', async (ctx) => {
         );
         
         await safeEditMessage(ctx, historyText, {
-            parse_mode: 'HTML',
+            parse_mode: 'Markdown',
             reply_markup: { inline_keyboard: keyboard }
         });
         
@@ -2871,6 +2879,17 @@ bot.action(/^task_history_page_(\d+)$/, async (ctx) => {
         await bot.action('task_history')(ctx);
     } catch (error) {
         console.error('Task history pagination error:', error);
+    }
+});
+
+// Tasks Pagination
+bot.action(/^tasks_page_(\d+)$/, async (ctx) => {
+    try {
+        const page = parseInt(ctx.match[1]);
+        ctx.session.tasksPage = page;
+        await bot.action('user_tasks')(ctx);
+    } catch (error) {
+        console.error('Tasks pagination error:', error);
     }
 });
 
@@ -2896,7 +2915,7 @@ bot.action('contact_support', async (ctx) => {
         
         await ctx.deleteMessage().catch(() => {});
         await safeSendMessage(ctx, contactText, {
-            parse_mode: 'HTML',
+            parse_mode: 'Markdown',
             reply_markup: {
                 inline_keyboard: [[
                     { text: '🔙 Back to Menu', callback_data: 'back_to_menu' }
@@ -2951,7 +2970,7 @@ scenes.contactUserMessage.on(['text', 'photo', 'document'], async (ctx) => {
                         ctx.message.photo[ctx.message.photo.length - 1].file_id,
                         {
                             caption: adminMessage,
-                            parse_mode: 'HTML',
+                            parse_mode: 'Markdown',
                             reply_markup: {
                                 inline_keyboard: [[
                                     { text: '💬 Reply to User', callback_data: `contact_user_${user.id}` }
@@ -2965,7 +2984,7 @@ scenes.contactUserMessage.on(['text', 'photo', 'document'], async (ctx) => {
                         ctx.message.document.file_id,
                         {
                             caption: adminMessage,
-                            parse_mode: 'HTML',
+                            parse_mode: 'Markdown',
                             reply_markup: {
                                 inline_keyboard: [[
                                     { text: '💬 Reply to User', callback_data: `contact_user_${user.id}` }
@@ -2978,7 +2997,7 @@ scenes.contactUserMessage.on(['text', 'photo', 'document'], async (ctx) => {
                         adminId,
                         adminMessage,
                         {
-                            parse_mode: 'HTML',
+                            parse_mode: 'Markdown',
                             reply_markup: {
                                 inline_keyboard: [[
                                     { text: '💬 Reply to User', callback_data: `contact_user_${user.id}` }
@@ -2996,7 +3015,7 @@ scenes.contactUserMessage.on(['text', 'photo', 'document'], async (ctx) => {
         
         // Confirm to user
         await safeSendMessage(ctx, '✅ *Message sent to support team!*\n\nWe will get back to you as soon as possible.', {
-            parse_mode: 'HTML',
+            parse_mode: 'Markdown',
             reply_markup: {
                 inline_keyboard: [[
                     { text: '🔙 Back to Menu', callback_data: 'back_to_menu' }
@@ -3040,7 +3059,7 @@ bot.command('admin', async (ctx) => {
                     );
                     
                     await safeSendMessage(ctx, `✅ *You are now an admin!*\n\nWelcome to the admin panel.`, {
-                        parse_mode: 'HTML'
+                        parse_mode: 'Markdown'
                     });
                 }
             } else {
@@ -3105,12 +3124,12 @@ async function showAdminPanel(ctx) {
         
         if (ctx.callbackQuery) {
             await safeEditMessage(ctx, text, {
-                parse_mode: 'HTML',
+                parse_mode: 'Markdown',
                 reply_markup: { inline_keyboard: keyboard }
             });
         } else {
             await safeSendMessage(ctx, text, {
-                parse_mode: 'HTML',
+                parse_mode: 'Markdown',
                 reply_markup: { inline_keyboard: keyboard }
             });
         }
@@ -3143,15 +3162,12 @@ bot.action('admin_messages_menu', async (ctx) => {
             { text: '🎮 Menu Message', callback_data: 'admin_menumessage' }
         ],
         [
-            { text: '📋 HTML Guide', callback_data: 'admin_html_guide' }
-        ],
-        [
             { text: '🔙 Back', callback_data: 'admin_back' }
         ]
     ];
     
     await safeEditMessage(ctx, text, {
-        parse_mode: 'HTML',
+        parse_mode: 'Markdown',
         reply_markup: { inline_keyboard: keyboard }
     });
 });
@@ -3178,7 +3194,7 @@ bot.action('admin_images_menu', async (ctx) => {
     ];
     
     await safeEditMessage(ctx, text, {
-        parse_mode: 'HTML',
+        parse_mode: 'Markdown',
         reply_markup: { inline_keyboard: keyboard }
     });
 });
@@ -3202,7 +3218,7 @@ bot.action('admin_earnings_menu', async (ctx) => {
     ];
     
     await safeEditMessage(ctx, text, {
-        parse_mode: 'HTML',
+        parse_mode: 'Markdown',
         reply_markup: { inline_keyboard: keyboard }
     });
 });
@@ -3226,7 +3242,7 @@ bot.action('admin_tasks_menu', async (ctx) => {
     ];
     
     await safeEditMessage(ctx, text, {
-        parse_mode: 'HTML',
+        parse_mode: 'Markdown',
         reply_markup: { inline_keyboard: keyboard }
     });
 });
@@ -3253,7 +3269,7 @@ bot.action('admin_channels_menu', async (ctx) => {
     ];
     
     await safeEditMessage(ctx, text, {
-        parse_mode: 'HTML',
+        parse_mode: 'Markdown',
         reply_markup: { inline_keyboard: keyboard }
     });
 });
@@ -3276,7 +3292,7 @@ bot.action('admin_admins_menu', async (ctx) => {
     ];
     
     await safeEditMessage(ctx, text, {
-        parse_mode: 'HTML',
+        parse_mode: 'Markdown',
         reply_markup: { inline_keyboard: keyboard }
     });
 });
@@ -3303,7 +3319,7 @@ bot.action('admin_settings_menu', async (ctx) => {
     ];
     
     await safeEditMessage(ctx, text, {
-        parse_mode: 'HTML',
+        parse_mode: 'Markdown',
         reply_markup: { inline_keyboard: keyboard }
     });
 });
@@ -3327,7 +3343,7 @@ bot.action('admin_tools_menu', async (ctx) => {
     ];
     
     await safeEditMessage(ctx, text, {
-        parse_mode: 'HTML',
+        parse_mode: 'Markdown',
         reply_markup: { inline_keyboard: keyboard }
     });
 });
@@ -3354,7 +3370,7 @@ bot.action('admin_alerts_menu', async (ctx) => {
     ];
     
     await safeEditMessage(ctx, text, {
-        parse_mode: 'HTML',
+        parse_mode: 'Markdown',
         reply_markup: { inline_keyboard: keyboard }
     });
 });
@@ -3377,7 +3393,7 @@ bot.action('admin_giftcodes_menu', async (ctx) => {
     ];
     
     await safeEditMessage(ctx, text, {
-        parse_mode: 'HTML',
+        parse_mode: 'Markdown',
         reply_markup: { inline_keyboard: keyboard }
     });
 });
@@ -3397,7 +3413,7 @@ bot.action('admin_bonus_menu', async (ctx) => {
     ];
     
     await safeEditMessage(ctx, text, {
-        parse_mode: 'HTML',
+        parse_mode: 'Markdown',
         reply_markup: { inline_keyboard: keyboard }
     });
 });
@@ -3416,7 +3432,7 @@ bot.action('admin_referral_menu', async (ctx) => {
     ];
     
     await safeEditMessage(ctx, text, {
-        parse_mode: 'HTML',
+        parse_mode: 'Markdown',
         reply_markup: { inline_keyboard: keyboard }
     });
 });
@@ -3439,7 +3455,7 @@ bot.action('admin_withdrawal_menu', async (ctx) => {
     ];
     
     await safeEditMessage(ctx, text, {
-        parse_mode: 'HTML',
+        parse_mode: 'Markdown',
         reply_markup: { inline_keyboard: keyboard }
     });
 });
@@ -3451,8 +3467,8 @@ bot.action('admin_withdrawal_menu', async (ctx) => {
 bot.action('admin_broadcast', async (ctx) => {
     if (!await isAdmin(ctx.from.id)) return;
     
-    await safeEditMessage(ctx, '📢 *Broadcast Message*\n\nSend the message you want to broadcast to all users.\n\nSupports HTML formatting.\n\nType "cancel" to cancel.', {
-        parse_mode: 'HTML'
+    await safeEditMessage(ctx, '📢 *Broadcast Message*\n\nSend the message you want to broadcast to all users.\n\nSupports Markdown formatting.\n\nType "cancel" to cancel.', {
+        parse_mode: 'Markdown'
     });
     await ctx.scene.enter('broadcast_scene');
 });
@@ -3484,7 +3500,7 @@ scenes.broadcast.on('message', async (ctx) => {
                         ctx.message.photo[ctx.message.photo.length - 1].file_id,
                         {
                             caption: ctx.message.caption,
-                            parse_mode: 'HTML'
+                            parse_mode: 'Markdown'
                         }
                     );
                 } else if (ctx.message.document) {
@@ -3493,14 +3509,14 @@ scenes.broadcast.on('message', async (ctx) => {
                         ctx.message.document.file_id,
                         {
                             caption: ctx.message.caption,
-                            parse_mode: 'HTML'
+                            parse_mode: 'Markdown'
                         }
                     );
                 } else if (ctx.message.text) {
                     await ctx.telegram.sendMessage(
                         user.userId,
                         ctx.message.text,
-                        { parse_mode: 'HTML' }
+                        { parse_mode: 'Markdown' }
                     );
                 }
                 
@@ -3520,7 +3536,7 @@ scenes.broadcast.on('message', async (ctx) => {
         
         await safeSendMessage(ctx,
             `✅ *Broadcast Complete*\n\n📊 *Statistics:*\n• Total: ${totalUsers}\n• ✅ Successful: ${successful}\n• ❌ Failed: ${failed}`,
-            { parse_mode: 'HTML' }
+            { parse_mode: 'Markdown' }
         );
         
         // Notify admins about broadcast completion
@@ -3625,12 +3641,12 @@ async function showUserStatsPage(ctx, page) {
         
         if (ctx.callbackQuery) {
             await safeEditMessage(ctx, usersText, {
-                parse_mode: 'HTML',
+                parse_mode: 'Markdown',
                 reply_markup: { inline_keyboard: keyboard }
             });
         } else {
             await safeSendMessage(ctx, usersText, {
-                parse_mode: 'HTML',
+                parse_mode: 'Markdown',
                 reply_markup: { inline_keyboard: keyboard }
             });
         }
@@ -3686,7 +3702,7 @@ bot.action(/^user_detail_(\d+)$/, async (ctx) => {
         ];
         
         await safeEditMessage(ctx, userDetail, {
-            parse_mode: 'HTML',
+            parse_mode: 'Markdown',
             reply_markup: { inline_keyboard: keyboard }
         });
     } catch (error) {
@@ -3708,7 +3724,7 @@ bot.action('admin_search_users', async (ctx) => {
     if (!await isAdmin(ctx.from.id)) return;
     
     await safeSendMessage(ctx, '🔍 *Search Users*\n\nEnter username, user ID, or name to search:\n\nType "cancel" to cancel.', {
-        parse_mode: 'HTML'
+        parse_mode: 'Markdown'
     });
     await ctx.scene.enter('search_users_scene');
 });
@@ -3788,7 +3804,7 @@ scenes.searchUsers.on('text', async (ctx) => {
             keyboard.push([{ text: '🔙 Back to Users', callback_data: 'admin_userstats' }]);
             
             await safeSendMessage(ctx, searchText, {
-                parse_mode: 'HTML',
+                parse_mode: 'Markdown',
                 reply_markup: { inline_keyboard: keyboard }
             });
             
@@ -3802,7 +3818,7 @@ scenes.searchUsers.on('text', async (ctx) => {
         ];
         
         await safeSendMessage(ctx, searchText, {
-            parse_mode: 'HTML',
+            parse_mode: 'Markdown',
             reply_markup: { inline_keyboard: keyboard }
         });
         
@@ -3826,7 +3842,7 @@ bot.action('admin_startmessage', async (ctx) => {
         const config = await db.collection('admin').findOne({ type: 'config' });
         const currentMessage = config?.startMessage || DEFAULT_CONFIG.startMessage;
         
-        const text = `📝 *Start Message Management*\n\nCurrent Message:\n${formatHTMLForDisplay(currentMessage, true)}\n\nAvailable variables: {first_name}, {last_name}, {full_name}, {username}, {name}, {total_users}, {total_paid}, {available_tasks}\n\nSupports HTML formatting\n\nSelect an option:`;
+        const text = `📝 *Start Message Management*\n\nCurrent Message:\n${formatHTMLForDisplay(currentMessage, true)}\n\nAvailable variables: {first_name}, {last_name}, {full_name}, {username}, {name}, {total_users}, {total_paid}, {available_tasks}\n\nSupports Markdown formatting\n\nSelect an option:`;
         
         const keyboard = [
             [{ text: '✏️ Edit', callback_data: 'admin_edit_startmessage' }, { text: '🔄 Reset', callback_data: 'admin_reset_startmessage' }],
@@ -3834,7 +3850,7 @@ bot.action('admin_startmessage', async (ctx) => {
         ];
         
         await safeEditMessage(ctx, text, {
-            parse_mode: 'HTML',
+            parse_mode: 'Markdown',
             reply_markup: { inline_keyboard: keyboard }
         });
     } catch (error) {
@@ -3848,8 +3864,8 @@ bot.action('admin_edit_startmessage', async (ctx) => {
         const config = await db.collection('admin').findOne({ type: 'config' });
         const currentMessage = config?.startMessage || DEFAULT_CONFIG.startMessage;
         
-        await safeSendMessage(ctx, `Current message:\n${formatHTMLForDisplay(currentMessage, true)}\n\nEnter the new start message:\n\nSupports HTML formatting\n\nType "cancel" to cancel.`, {
-            parse_mode: 'HTML'
+        await safeSendMessage(ctx, `Current message:\n${formatHTMLForDisplay(currentMessage, true)}\n\nEnter the new start message:\n\nSupports Markdown formatting\n\nType "cancel" to cancel.`, {
+            parse_mode: 'Markdown'
         });
         await ctx.scene.enter('edit_start_message_scene');
     } catch (error) {
@@ -3918,7 +3934,7 @@ bot.action('admin_menumessage', async (ctx) => {
         const config = await db.collection('admin').findOne({ type: 'config' });
         const currentMessage = config?.menuMessage || DEFAULT_CONFIG.menuMessage;
         
-        const text = `📝 *Menu Message Management*\n\nCurrent Message:\n${formatHTMLForDisplay(currentMessage, true)}\n\nAvailable variables: {first_name}, {last_name}, {full_name}, {username}, {name}, {balance}, {total_referrals}, {tasks_completed}, {wallet_set}\n\nSupports HTML formatting\n\nSelect an option:`;
+        const text = `📝 *Menu Message Management*\n\nCurrent Message:\n${formatHTMLForDisplay(currentMessage, true)}\n\nAvailable variables: {first_name}, {last_name}, {full_name}, {username}, {name}, {balance}, {total_referrals}, {tasks_completed}, {wallet_set}\n\nSupports Markdown formatting\n\nSelect an option:`;
         
         const keyboard = [
             [{ text: '✏️ Edit', callback_data: 'admin_edit_menumessage' }, { text: '🔄 Reset', callback_data: 'admin_reset_menumessage' }],
@@ -3926,7 +3942,7 @@ bot.action('admin_menumessage', async (ctx) => {
         ];
         
         await safeEditMessage(ctx, text, {
-            parse_mode: 'HTML',
+            parse_mode: 'Markdown',
             reply_markup: { inline_keyboard: keyboard }
         });
     } catch (error) {
@@ -3940,8 +3956,8 @@ bot.action('admin_edit_menumessage', async (ctx) => {
         const config = await db.collection('admin').findOne({ type: 'config' });
         const currentMessage = config?.menuMessage || DEFAULT_CONFIG.menuMessage;
         
-        await safeSendMessage(ctx, `Current message:\n${formatHTMLForDisplay(currentMessage, true)}\n\nEnter the new menu message:\n\nSupports HTML formatting\n\nType "cancel" to cancel.`, {
-            parse_mode: 'HTML'
+        await safeSendMessage(ctx, `Current message:\n${formatHTMLForDisplay(currentMessage, true)}\n\nEnter the new menu message:\n\nSupports Markdown formatting\n\nType "cancel" to cancel.`, {
+            parse_mode: 'Markdown'
         });
         await ctx.scene.enter('edit_menu_message_scene');
     } catch (error) {
@@ -4020,7 +4036,7 @@ bot.action('admin_startimage', async (ctx) => {
         ];
         
         await safeEditMessage(ctx, text, {
-            parse_mode: 'HTML',
+            parse_mode: 'Markdown',
             reply_markup: { inline_keyboard: keyboard }
         });
     } catch (error) {
@@ -4031,7 +4047,7 @@ bot.action('admin_startimage', async (ctx) => {
 
 bot.action('admin_edit_startimage_url', async (ctx) => {
     await safeSendMessage(ctx, 'Enter the new image URL:\n\nUse {name} variable for user name overlay (optional)\n\nType "cancel" to cancel.', {
-        parse_mode: 'HTML'
+        parse_mode: 'Markdown'
     });
     await ctx.scene.enter('edit_start_image_scene');
 });
@@ -4056,7 +4072,7 @@ scenes.editStartImage.on('text', async (ctx) => {
         const isValid = await isValidImageUrl(newUrl);
         if (!isValid) {
             await safeSendMessage(ctx, '⚠️ The URL does not appear to be a valid image.\n\nDo you still want to use it?', {
-                parse_mode: 'HTML',
+                parse_mode: 'Markdown',
                 reply_markup: {
                     inline_keyboard: [
                         [{ text: '✅ Yes, use anyway', callback_data: `confirm_bad_url_start_${encodeURIComponent(newUrl)}` }],
@@ -4142,7 +4158,7 @@ bot.action('admin_menuimage', async (ctx) => {
         ];
         
         await safeEditMessage(ctx, text, {
-            parse_mode: 'HTML',
+            parse_mode: 'Markdown',
             reply_markup: { inline_keyboard: keyboard }
         });
     } catch (error) {
@@ -4153,7 +4169,7 @@ bot.action('admin_menuimage', async (ctx) => {
 
 bot.action('admin_edit_menuimage_url', async (ctx) => {
     await safeSendMessage(ctx, 'Enter the new image URL:\n\nUse {name} variable for user name overlay (optional)\n\nType "cancel" to cancel.', {
-        parse_mode: 'HTML'
+        parse_mode: 'Markdown'
     });
     await ctx.scene.enter('edit_menu_image_scene');
 });
@@ -4178,7 +4194,7 @@ scenes.editMenuImage.on('text', async (ctx) => {
         const isValid = await isValidImageUrl(newUrl);
         if (!isValid) {
             await safeSendMessage(ctx, '⚠️ The URL does not appear to be a valid image.\n\nDo you still want to use it?', {
-                parse_mode: 'HTML',
+                parse_mode: 'Markdown',
                 reply_markup: {
                     inline_keyboard: [
                         [{ text: '✅ Yes, use anyway', callback_data: `confirm_bad_url_menu_${encodeURIComponent(newUrl)}` }],
@@ -4263,7 +4279,7 @@ bot.action('admin_bonusimage', async (ctx) => {
         ];
         
         await safeEditMessage(ctx, text, {
-            parse_mode: 'HTML',
+            parse_mode: 'Markdown',
             reply_markup: { inline_keyboard: keyboard }
         });
     } catch (error) {
@@ -4301,7 +4317,7 @@ bot.action('admin_image_overlay', async (ctx) => {
         ];
         
         await safeEditMessage(ctx, text, {
-            parse_mode: 'HTML',
+            parse_mode: 'Markdown',
             reply_markup: { inline_keyboard: keyboard }
         });
     } catch (error) {
@@ -4413,7 +4429,7 @@ bot.action('admin_manage_images', async (ctx) => {
         keyboard.push([{ text: '🔙 Back', callback_data: 'admin_images_menu' }]);
         
         await safeEditMessage(ctx, text, {
-            parse_mode: 'HTML',
+            parse_mode: 'Markdown',
             reply_markup: { inline_keyboard: keyboard }
         });
     } catch (error) {
@@ -4430,7 +4446,7 @@ bot.action('admin_create_giftcode', async (ctx) => {
     if (!await isAdmin(ctx.from.id)) return;
     
     await safeSendMessage(ctx, '🎫 *Create Gift Code*\n\nEnter maximum number of uses (or 0 for unlimited):\n\nType "cancel" to cancel.', {
-        parse_mode: 'HTML'
+        parse_mode: 'Markdown'
     });
     await ctx.scene.enter('create_gift_code_scene');
 });
@@ -4575,7 +4591,7 @@ scenes.createGiftCode.on('text', async (ctx) => {
             ];
             
             await safeSendMessage(ctx, successText, {
-                parse_mode: 'HTML',
+                parse_mode: 'Markdown',
                 reply_markup: { inline_keyboard: keyboard }
             });
             
@@ -4691,7 +4707,7 @@ bot.action('admin_manage_giftcodes', async (ctx) => {
         );
         
         await safeEditMessage(ctx, codesText, {
-            parse_mode: 'HTML',
+            parse_mode: 'Markdown',
             reply_markup: { inline_keyboard: keyboard }
         });
         
@@ -4744,7 +4760,7 @@ bot.action(/^edit_giftcode_(.+)$/, async (ctx) => {
         ];
         
         await safeEditMessage(ctx, codeText, {
-            parse_mode: 'HTML',
+            parse_mode: 'Markdown',
             reply_markup: { inline_keyboard: keyboard }
         });
         
@@ -4785,7 +4801,7 @@ bot.action('admin_bonus_settings', async (ctx) => {
         ];
         
         await safeEditMessage(ctx, text, {
-            parse_mode: 'HTML',
+            parse_mode: 'Markdown',
             reply_markup: { inline_keyboard: keyboard }
         });
     } catch (error) {
@@ -4827,7 +4843,7 @@ bot.action('admin_referral_settings', async (ctx) => {
         ];
         
         await safeEditMessage(ctx, text, {
-            parse_mode: 'HTML',
+            parse_mode: 'Markdown',
             reply_markup: { inline_keyboard: keyboard }
         });
     } catch (error) {
@@ -4869,7 +4885,7 @@ bot.action('admin_withdrawal_settings', async (ctx) => {
         ];
         
         await safeEditMessage(ctx, text, {
-            parse_mode: 'HTML',
+            parse_mode: 'Markdown',
             reply_markup: { inline_keyboard: keyboard }
         });
     } catch (error) {
@@ -4955,7 +4971,7 @@ bot.action('admin_withdrawal_requests', async (ctx) => {
         );
         
         await safeEditMessage(ctx, requestsText, {
-            parse_mode: 'HTML',
+            parse_mode: 'Markdown',
             reply_markup: { inline_keyboard: keyboard }
         });
         
@@ -5004,7 +5020,7 @@ bot.action(/^process_withdrawal_(.+)$/, async (ctx) => {
         ];
         
         await safeEditMessage(ctx, requestText, {
-            parse_mode: 'HTML',
+            parse_mode: 'Markdown',
             reply_markup: { inline_keyboard: keyboard }
         });
         
@@ -5065,7 +5081,7 @@ bot.action(/^approve_withdrawal_(.+)$/, async (ctx) => {
                 `*Processed:* ${new Date().toLocaleString()}\n\n` +
                 `Payment has been processed to your wallet.\n` +
                 `Please check your account.`,
-                { parse_mode: 'HTML' }
+                { parse_mode: 'Markdown' }
             );
         } catch (error) {
             console.error('Failed to notify user:', error);
@@ -5086,7 +5102,7 @@ bot.action(/^approve_withdrawal_(.+)$/, async (ctx) => {
         ];
         
         await safeEditMessage(ctx, successText, {
-            parse_mode: 'HTML',
+            parse_mode: 'Markdown',
             reply_markup: { inline_keyboard: keyboard }
         });
         
@@ -5105,7 +5121,7 @@ bot.action(/^reject_withdrawal_(.+)$/, async (ctx) => {
         ctx.session.rejectingWithdrawal = requestId;
         
         await safeSendMessage(ctx, 'Enter rejection reason for the user:\n\nType "cancel" to cancel.', {
-            parse_mode: 'HTML'
+            parse_mode: 'Markdown'
         });
         
     } catch (error) {
@@ -5168,7 +5184,7 @@ bot.on('text', async (ctx) => {
                     `*Reason:* ${rejectionReason}\n` +
                     `*Processed:* ${new Date().toLocaleString()}\n\n` +
                     `Amount has been refunded to your balance.`,
-                    { parse_mode: 'HTML' }
+                    { parse_mode: 'Markdown' }
                 );
             } catch (error) {
                 console.error('Failed to notify user:', error);
@@ -5189,7 +5205,7 @@ bot.on('text', async (ctx) => {
             ];
             
             await safeSendMessage(ctx, successText, {
-                parse_mode: 'HTML',
+                parse_mode: 'Markdown',
                 reply_markup: { inline_keyboard: keyboard }
             });
         }
@@ -5207,7 +5223,7 @@ bot.action('admin_add_task', async (ctx) => {
     if (!await isAdmin(ctx.from.id)) return;
     
     await safeSendMessage(ctx, '📋 *Add New Task*\n\nSend task images (maximum 3):\n\nType "cancel" to cancel.', {
-        parse_mode: 'HTML'
+        parse_mode: 'Markdown'
     });
     
     ctx.session.addingTask = {
@@ -5365,7 +5381,7 @@ scenes.addTask.on(['photo', 'text'], async (ctx) => {
             ];
             
             await safeSendMessage(ctx, successText, {
-                parse_mode: 'HTML',
+                parse_mode: 'Markdown',
                 reply_markup: { inline_keyboard: keyboard }
             });
             
@@ -5463,7 +5479,7 @@ bot.action('admin_manage_tasks', async (ctx) => {
         );
         
         await safeEditMessage(ctx, tasksText, {
-            parse_mode: 'HTML',
+            parse_mode: 'Markdown',
             reply_markup: { inline_keyboard: keyboard }
         });
         
@@ -5527,7 +5543,7 @@ bot.action(/^manage_task_(.+)$/, async (ctx) => {
         ];
         
         await safeEditMessage(ctx, taskText, {
-            parse_mode: 'HTML',
+            parse_mode: 'Markdown',
             reply_markup: { inline_keyboard: keyboard }
         });
         
@@ -5612,7 +5628,7 @@ bot.action('admin_task_requests', async (ctx) => {
         );
         
         await safeEditMessage(ctx, requestsText, {
-            parse_mode: 'HTML',
+            parse_mode: 'Markdown',
             reply_markup: { inline_keyboard: keyboard }
         });
         
@@ -5663,12 +5679,12 @@ bot.action(/^review_submission_(.+)$/, async (ctx) => {
         if (submission.screenshots.length > 0) {
             await ctx.replyWithPhoto(submission.screenshots[0], {
                 caption: reviewText,
-                parse_mode: 'HTML',
+                parse_mode: 'Markdown',
                 reply_markup: { inline_keyboard: keyboard }
             });
         } else {
             await safeEditMessage(ctx, reviewText, {
-                parse_mode: 'HTML',
+                parse_mode: 'Markdown',
                 reply_markup: { inline_keyboard: keyboard }
             });
         }
@@ -5720,7 +5736,7 @@ bot.action(/^approve_submission_(.+)$/, async (ctx) => {
                 `*Status:* ✅ Approved\n` +
                 `*Approved:* ${new Date().toLocaleString()}\n\n` +
                 `Bonus has been added to your balance.`,
-                { parse_mode: 'HTML' }
+                { parse_mode: 'Markdown' }
             );
         } catch (error) {
             console.error('Failed to notify user:', error);
@@ -5741,7 +5757,7 @@ bot.action(/^approve_submission_(.+)$/, async (ctx) => {
         ];
         
         await safeEditMessage(ctx, successText, {
-            parse_mode: 'HTML',
+            parse_mode: 'Markdown',
             reply_markup: { inline_keyboard: keyboard }
         });
         
@@ -5760,7 +5776,7 @@ bot.action(/^reject_submission_(.+)$/, async (ctx) => {
         ctx.session.rejectingSubmission = submissionId;
         
         await safeSendMessage(ctx, 'Enter rejection reason for the user:\n\nType "cancel" to cancel.', {
-            parse_mode: 'HTML'
+            parse_mode: 'Markdown'
         });
         
     } catch (error) {
@@ -5817,7 +5833,7 @@ bot.on('text', async (ctx) => {
                     `*Reason:* ${rejectionReason}\n` +
                     `*Processed:* ${new Date().toLocaleString()}\n\n` +
                     `Please review the task requirements and try again.`,
-                    { parse_mode: 'HTML' }
+                    { parse_mode: 'Markdown' }
                 );
             } catch (error) {
                 console.error('Failed to notify user:', error);
@@ -5837,7 +5853,7 @@ bot.on('text', async (ctx) => {
             ];
             
             await safeSendMessage(ctx, successText, {
-                parse_mode: 'HTML',
+                parse_mode: 'Markdown',
                 reply_markup: { inline_keyboard: keyboard }
             );
         }
@@ -5916,7 +5932,7 @@ bot.action('admin_task_history', async (ctx) => {
         );
         
         await safeEditMessage(ctx, historyText, {
-            parse_mode: 'HTML',
+            parse_mode: 'Markdown',
             reply_markup: { inline_keyboard: keyboard }
         });
         
@@ -5934,7 +5950,7 @@ bot.action('admin_add_channel', async (ctx) => {
     if (!await isAdmin(ctx.from.id)) return;
     
     await safeSendMessage(ctx, '📺 *Add New Channel*\n\nEnter channel button name (e.g., "Join Main Channel"):\n\nType "cancel" to cancel.', {
-        parse_mode: 'HTML'
+        parse_mode: 'Markdown'
     });
     await ctx.scene.enter('add_channel_scene');
 });
@@ -6031,7 +6047,7 @@ scenes.addChannel.on('text', async (ctx) => {
             ];
             
             await safeSendMessage(ctx, levelText, {
-                parse_mode: 'HTML',
+                parse_mode: 'Markdown',
                 reply_markup: { inline_keyboard: keyboard }
             });
             
@@ -6103,7 +6119,7 @@ bot.action(/^set_channel_level_(.+)$/, async (ctx) => {
         ];
         
         await safeEditMessage(ctx, successText, {
-            parse_mode: 'HTML',
+            parse_mode: 'Markdown',
             reply_markup: { inline_keyboard: keyboard }
         });
         
@@ -6148,7 +6164,7 @@ bot.action('admin_channels', async (ctx) => {
         ].filter(row => row.length > 0);
         
         await safeEditMessage(ctx, text, {
-            parse_mode: 'HTML',
+            parse_mode: 'Markdown',
             reply_markup: { inline_keyboard: keyboard }
         });
     } catch (error) {
@@ -6179,7 +6195,7 @@ bot.action('admin_channel_levels', async (ctx) => {
         ];
         
         await safeEditMessage(ctx, text, {
-            parse_mode: 'HTML',
+            parse_mode: 'Markdown',
             reply_markup: { inline_keyboard: keyboard }
         });
     } catch (error) {
@@ -6216,7 +6232,7 @@ bot.action('admin_manage_admins', async (ctx) => {
         ];
         
         await safeEditMessage(ctx, text, {
-            parse_mode: 'HTML',
+            parse_mode: 'Markdown',
             reply_markup: { inline_keyboard: keyboard }
         });
     } catch (error) {
@@ -6258,7 +6274,7 @@ scenes.addAdmin.on('text', async (ctx) => {
         );
         
         await safeSendMessage(ctx, `✅ Admin added successfully!\n\nNew admin ID: \`${newAdminId}\``, {
-            parse_mode: 'HTML'
+            parse_mode: 'Markdown'
         });
         
         await ctx.scene.leave();
@@ -6293,7 +6309,7 @@ bot.action('admin_timer', async (ctx) => {
         ];
         
         await safeEditMessage(ctx, text, {
-            parse_mode: 'HTML',
+            parse_mode: 'Markdown',
             reply_markup: { inline_keyboard: keyboard }
         });
     } catch (error) {
@@ -6381,7 +6397,7 @@ bot.action('admin_contact_button', async (ctx) => {
         ];
         
         await safeEditMessage(ctx, text, {
-            parse_mode: 'HTML',
+            parse_mode: 'Markdown',
             reply_markup: { inline_keyboard: keyboard }
         });
     } catch (error) {
@@ -6439,7 +6455,7 @@ bot.action('admin_disable_bot', async (ctx) => {
         ];
         
         await safeEditMessage(ctx, text, {
-            parse_mode: 'HTML',
+            parse_mode: 'Markdown',
             reply_markup: { inline_keyboard: keyboard }
         });
     } catch (error) {
@@ -6490,7 +6506,7 @@ bot.action('admin_auto_accept', async (ctx) => {
         ];
         
         await safeEditMessage(ctx, text, {
-            parse_mode: 'HTML',
+            parse_mode: 'Markdown',
             reply_markup: { inline_keyboard: keyboard }
         });
     } catch (error) {
@@ -6546,7 +6562,7 @@ bot.action('admin_mute_notifications', async (ctx) => {
         ];
         
         await safeEditMessage(ctx, text, {
-            parse_mode: 'HTML',
+            parse_mode: 'Markdown',
             reply_markup: { inline_keyboard: keyboard }
         });
     } catch (error) {
@@ -6581,91 +6597,10 @@ bot.action('toggle_mute_status', async (ctx) => {
 });
 
 // ==========================================
-// ADMIN FEATURES - HTML GUIDE
+// ADMIN FEATURES - HTML GUIDE (REMOVED)
 // ==========================================
 
-bot.action('admin_html_guide', async (ctx) => {
-    if (!await isAdmin(ctx.from.id)) return;
-    
-    try {
-        const htmlGuide = `<b>📋 HTML Formatting Guide</b>
-
-Telegram supports HTML formatting in messages. Here are all available tags:
-
-<b>1. &lt;b&gt;bold&lt;/b&gt;, &lt;strong&gt;bold&lt;/strong&gt;</b>
-Example: This is <b>bold text</b>
-Copy: <code>&lt;b&gt;bold text&lt;/b&gt;</code>
-
-<b>2. &lt;i&gt;italic&lt;/i&gt;, &lt;em&gt;italic&lt;/em&gt;</b>
-Example: This is <i>italic text</i>
-Copy: <code>&lt;i&gt;italic text&lt;/i&gt;</code>
-
-<b>3. &lt;u&gt;underline&lt;/u&gt;, &lt;ins&gt;underline&lt;/ins&gt;</b>
-Example: This is <u>underlined text</u>
-Copy: <code>&lt;u&gt;underlined text&lt;/u&gt;</code>
-
-<b>4. &lt;s&gt;strikethrough&lt;/s&gt;, &lt;strike&gt;strikethrough&lt;/strike&gt;, &lt;del&gt;strikethrough&lt;/del&gt;</b>
-Example: This is <s>strikethrough text</s>
-Copy: <code>&lt;s&gt;strikethrough text&lt;/s&gt;</code>
-
-<b>5. &lt;span class="tg-spoiler"&gt;spoiler&lt;/span&gt;, &lt;tg-spoiler&gt;spoiler&lt;/tg-spoiler&gt;</b>
-Example: This is <span class="tg-spoiler">spoiler text</span>
-Copy: <code>&lt;span class="tg-spoiler"&gt;spoiler text&lt;/span&gt;</code>
-
-<b>6. &lt;code&gt;inline code&lt;/code&gt;</b>
-Example: This is <code>inline code</code>
-Copy: <code>&lt;code&gt;inline code&lt;/code&gt;</code>
-
-<b>7. &lt;pre&gt;pre-formatted code block&lt;/pre&gt;</b>
-Example: <pre>function hello() {
-  console.log("Hello");
-}</pre>
-Copy: <code>&lt;pre&gt;Your code here&lt;/pre&gt;</code>
-
-<b>8. &lt;pre&gt;&lt;code class="language-python"&gt;language-specific code&lt;/code&gt;&lt;/pre&gt;</b>
-Example: <pre><code class="language-python">def hello():
-    print("Hello")</code></pre>
-Copy: <code>&lt;pre&gt;&lt;code class="language-python"&gt;Your code here&lt;/code&gt;&lt;/pre&gt;</code>
-
-<b>9. &lt;a href="http://example.com"&gt;link text&lt;/a&gt;</b>
-Example: Visit <a href="https://telegram.org">Telegram</a>
-Copy: <code>&lt;a href="https://example.com"&gt;Link Text&lt;/a&gt;</code>
-
-<b>10. &lt;a href="tg://user?id=123456789"&gt;mention user&lt;/a&gt;</b>
-Example: Hello <a href="tg://user?id=123456789">User</a>
-Copy: <code>&lt;a href="tg://user?id=USER_ID"&gt;User Name&lt;/a&gt;</code>
-
-<b>11. &lt;blockquote&gt;quoted text&lt;/blockquote&gt;</b>
-Example: <blockquote>This is a block quotation
-that can span multiple lines</blockquote>
-Copy: <code>&lt;blockquote&gt;Your quoted text here&lt;/blockquote&gt;</code>
-
-<b>12. &lt;blockquote expandable&gt;expandable quote&lt;/blockquote&gt;</b>
-Example: <blockquote expandable>This is an expandable quotation
-with hidden text by default</blockquote>
-Copy: <code>&lt;blockquote expandable&gt;Your expandable text&lt;/blockquote&gt;</code>
-
-<b>Nested Formatting Example:</b>
-<code>&lt;b&gt;bold &lt;i&gt;italic bold &lt;s&gt;italic bold strikethrough &lt;span class="tg-spoiler"&gt;italic bold strikethrough spoiler&lt;/span&gt;&lt;/s&gt; &lt;u&gt;underline italic bold&lt;/u&gt;&lt;/i&gt; bold&lt;/b&gt;</code>
-
-<b>Custom Emoji:</b>
-<code>&lt;tg-emoji emoji-id="5368324170671202286"&gt;👍&lt;/tg-emoji&gt;</code>
-
-<i>Note: When using HTML, make sure to escape &amp;, &lt;, &gt; characters as &amp;amp;, &amp;lt;, &amp;gt;</i>`;
-
-        const keyboard = [
-            [{ text: '📝 Try in Message', callback_data: 'admin_startmessage' }],
-            [{ text: '🔙 Back', callback_data: 'admin_messages_menu' }]
-        ];
-
-        await safeEditMessage(ctx, htmlGuide, {
-            reply_markup: { inline_keyboard: keyboard }
-        });
-    } catch (error) {
-        console.error('HTML guide error:', error);
-        await safeSendMessage(ctx, '❌ An error occurred.');
-    }
-});
+// HTML guide removed as requested
 
 // ==========================================
 // ADMIN FEATURES - DELETE DATA
@@ -6674,7 +6609,7 @@ Copy: <code>&lt;blockquote expandable&gt;Your expandable text&lt;/blockquote&gt;
 bot.action('admin_deletedata', async (ctx) => {
     if (!await isAdmin(ctx.from.id)) return;
     
-    const text = '<b>⚠️ DANGER ZONE - DATA DELETION</b>\n\nSelect what you want to delete:\n\n<b>WARNING: These actions cannot be undone!</b>';
+    const text = '⚠️ *DANGER ZONE - DATA DELETION*\n\nSelect what you want to delete:\n\n*WARNING: These actions cannot be undone!*';
     
     const keyboard = [
         [{ text: '🗑️ Delete All Users', callback_data: 'delete_all_users' }, { text: '🗑️ Delete All Channels', callback_data: 'delete_all_channels' }],
@@ -6684,7 +6619,7 @@ bot.action('admin_deletedata', async (ctx) => {
     ];
     
     await safeEditMessage(ctx, text, {
-        parse_mode: 'HTML',
+        parse_mode: 'Markdown',
         reply_markup: { inline_keyboard: keyboard }
     });
 });
@@ -6784,7 +6719,7 @@ bot.on('chat_join_request', async (ctx) => {
                     
                     // Notify admin (excluding muted admins)
                     if (shouldNotify) {
-                        await notifyAdmin(`✅ <b>Join Request Auto-Approved</b>\n\n👤 User: ${userId}\n📺 Channel: ${channel.title}\n🔗 Type: ${channel.type}\n⚙️ Auto-accept: Enabled`);
+                        await notifyAdmin(`✅ *Join Request Auto-Approved*\n\n👤 User: ${userId}\n📺 Channel: ${channel.title}\n🔗 Type: ${channel.type}\n⚙️ Auto-accept: Enabled`);
                     }
                     
                 } catch (error) {
@@ -6797,7 +6732,7 @@ bot.on('chat_join_request', async (ctx) => {
                     } else {
                         const canNotify = canProcessError(`notify_${errorKey}`, 1, 300000);
                         if (canNotify && shouldNotify) {
-                            await notifyAdmin(`❌ <b>Join Request Failed</b>\n\n👤 User: ${userId}\n📺 Channel: ${channel.title}\n❌ Error: ${error.message}\n\n⚠️ Will retry up to 2 times`);
+                            await notifyAdmin(`❌ *Join Request Failed*\n\n👤 User: ${userId}\n📺 Channel: ${channel.title}\n❌ Error: ${error.message}\n\n⚠️ Will retry up to 2 times`);
                         }
                     }
                 }
@@ -6807,7 +6742,7 @@ bot.on('chat_join_request', async (ctx) => {
                 
                 // Only notify admin if shouldNotify is true (excluding muted admins)
                 if (shouldNotify) {
-                    await notifyAdmin(`⏸️ <b>Join Request Pending</b>\n\n👤 User: ${userId}\n📺 Channel: ${channel.title}\n🔗 Type: ${channel.type}\n⚙️ Auto-accept: Disabled\n\n⚠️ Manual approval required`);
+                    await notifyAdmin(`⏸️ *Join Request Pending*\n\n👤 User: ${userId}\n📺 Channel: ${channel.title}\n🔗 Type: ${channel.type}\n⚙️ Auto-accept: Disabled\n\n⚠️ Manual approval required`);
                 }
             }
         } else {
@@ -6874,7 +6809,7 @@ bot.catch = (error, ctx) => {
         console.error('🚨 CRITICAL: Too many errors, bot may be stuck');
         
         // Notify admins (excluding muted ones)
-        notifyAdmin(`🚨 <b>Bot Error Alert</b>\n\nToo many errors detected (${errorCount}).\nBot may be stuck in error loop.\n\nUse /admin to access admin panel and check status.`);
+        notifyAdmin(`🚨 *Bot Error Alert*\n\nToo many errors detected (${errorCount}).\nBot may be stuck in error loop.\n\nUse /admin to access admin panel and check status.`);
     }
     
     // Call original handler
@@ -6919,61 +6854,28 @@ async function startBot() {
         process.once('SIGINT', () => {
             console.log('🛑 SIGINT received, shutting down gracefully...');
             bot.stop('SIGINT');
-            if (client) client.close();
+            // Close the database connection
+            if (client) {
+                client.close();
+            }
             process.exit(0);
         });
-        
+
         process.once('SIGTERM', () => {
             console.log('🛑 SIGTERM received, shutting down gracefully...');
             bot.stop('SIGTERM');
-            if (client) client.close();
+            // Close the database connection
+            if (client) {
+                client.close();
+            }
             process.exit(0);
         });
         
-        // Send a test message to verify bot is working
-        const testAdminId = 8435248854;
-        try {
-            await bot.telegram.sendMessage(testAdminId, 
-                '🤖 *Bot Started Successfully!*\n\n' +
-                '💰 *Earning Bot Features:*\n' +
-                '• User Registration & Verification\n' +
-                '• Channel Management with Levels\n' +
-                '• Task System with Approval\n' +
-                '• Referral System\n' +
-                '• Gift Codes\n' +
-                '• Withdrawal System\n' +
-                '• Bonus System\n' +
-                '• Admin Panel with Full Control\n\n' +
-                '🚀 Bot is ready to earn!',
-                { parse_mode: 'HTML' }
-            );
-            console.log('✅ Test message sent to admin');
-        } catch (error) {
-            console.log('⚠️ Could not send test message, but bot is running');
-        }
-        
     } catch (error) {
-        console.error('❌ Failed to start bot:', error);
-        // Try to restart after delay
-        setTimeout(startBot, 10000);
+        console.error('Failed to start bot:', error);
+        process.exit(1);
     }
 }
 
-// Start the bot
+// Call the start function
 startBot();
-
-// Handle Railway port binding
-const PORT = process.env.PORT || 3000;
-if (process.env.RAILWAY_ENVIRONMENT || process.env.PORT) {
-    const http = require('http');
-    const server = http.createServer((req, res) => {
-        res.writeHead(200, { 'Content-Type': 'text/plain' });
-        res.end('🤖 Earning Bot is running...');
-    });
-    
-    server.listen(PORT, () => {
-        console.log(`🚂 Server listening on port ${PORT}`);
-    });
-}
-
-console.log('🚀 Earning Bot Starting...');
