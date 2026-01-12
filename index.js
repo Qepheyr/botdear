@@ -3,8 +3,6 @@ const { MongoClient, ObjectId } = require('mongodb');
 const crypto = require('crypto');
 const cloudinary = require('cloudinary').v2;
 const fetch = require('node-fetch');
-const path = require('path');
-const fs = require('fs');
 require('dotenv').config();
 
 // ==========================================
@@ -13,43 +11,52 @@ require('dotenv').config();
 
 // Cloudinary configuration
 cloudinary.config({
-  cloud_name: process.env.CLOUDINARY_CLOUD_NAME || 'dneusgyzc',
-  api_key: process.env.CLOUDINARY_API_KEY || '474713292161728',
-  api_secret: process.env.CLOUDINARY_API_SECRET || 'DHJmvD784FEVmeOt1-K8XeNhCQQ'
+  cloud_name: 'dneusgyzc',
+  api_key: '474713292161728',
+  api_secret: 'DHJmvD784FEVmeOt1-K8XeNhCQQ'
 });
 
 // Initialize bot
 const BOT_TOKEN = process.env.BOT_TOKEN || '8295150408:AAHk4M0LX0YAUk4vDuSCi4mOFg6se66J3hM';
 const bot = new Telegraf(BOT_TOKEN);
 
-// MongoDB connection with Railway fix
+// MongoDB connection - FIXED: Correct format for MongoDB URI
 const mongoUri = process.env.MONGODB_URI || 'mongodb+srv://sandip102938:Q1g2Fbn7ewNqEvuK@test.ebvv4hf.mongodb.net/earningbot?retryWrites=true&w=majority';
+
+// 🔐 ADMIN CONFIGURATION
+const ADMIN_IDS = process.env.ADMIN_IDS ? process.env.ADMIN_IDS.split(',').map(Number) : [8435248854, 5518423310];
+const ADMIN_CODE = process.env.ADMIN_CODE || 'ADMIN12345'; // Default admin code
+
+// Emergency stop for error loop
+bot.command('emergency', async (ctx) => {
+    console.log('🆘 Emergency stop triggered by:', ctx.from.id);
+    errorCooldowns.clear();
+    await ctx.reply('🆘 Emergency error reset executed. Bot should respond now.');
+    
+    setTimeout(async () => {
+        await ctx.reply('✅ Bot is now responsive. Try /start or /admin');
+    }, 1000);
+});
+
+// ==========================================
+// DATABASE SETUP
+// ==========================================
+
 let db, client;
 
-// Fix for Railway MongoDB connection
 async function connectDB() {
     try {
-        console.log('🔌 Connecting to MongoDB...');
+        console.log('🔗 Attempting MongoDB connection...');
         
-        // Parse connection string to handle different formats
-        let connectionString = mongoUri;
-        
-        // Remove any problematic parameters that might cause SRV issues
-        if (connectionString.includes('mongodb+srv://')) {
-            // Ensure proper formatting for SRV connections
-            if (!connectionString.includes('?retryWrites')) {
-                connectionString += '?retryWrites=true&w=majority';
-            }
-        }
-        
-        console.log('Connection string:', connectionString.substring(0, 50) + '...');
+        // Use a more robust connection string
+        const connectionString = mongoUri.replace('mongodb+srv://', 'mongodb://');
         
         client = new MongoClient(connectionString, {
             serverSelectionTimeoutMS: 10000,
-            connectTimeoutMS: 15000,
-            socketTimeoutMS: 20000,
-            maxPoolSize: 20,
-            minPoolSize: 5,
+            connectTimeoutMS: 30000,
+            socketTimeoutMS: 45000,
+            maxPoolSize: 10,
+            minPoolSize: 1,
             retryWrites: true,
             w: 'majority'
         });
@@ -57,36 +64,35 @@ async function connectDB() {
         await client.connect();
         db = client.db();
         
-        // Test connection with a ping
+        // Test connection
         await db.command({ ping: 1 });
-        console.log('✅ Connected to MongoDB successfully!');
+        console.log('✅ Connected to MongoDB - earningbot database');
         
         // Create indexes
         await createIndexes();
-        
         return true;
+        
     } catch (error) {
         console.error('❌ MongoDB connection error:', error.message);
-        console.error('Full error:', error);
+        console.log('⚠️ Retrying connection in 5 seconds...');
         
         // Try alternative connection method
         try {
-            console.log('🔄 Trying alternative connection method...');
+            if (client) await client.close();
             
-            // For Railway/Heroku, sometimes direct connection works better
-            const altClient = new MongoClient(mongoUri, {
+            // Try direct connection
+            client = new MongoClient(mongoUri, {
                 serverSelectionTimeoutMS: 5000,
                 connectTimeoutMS: 10000
             });
             
-            await altClient.connect();
-            db = altClient.db();
-            await db.command({ ping: 1 });
-            console.log('✅ Connected via alternative method!');
-            client = altClient;
+            await client.connect();
+            db = client.db('earningbot');
+            console.log('✅ Connected via alternative method');
             return true;
-        } catch (altError) {
-            console.error('❌ Alternative connection also failed:', altError.message);
+            
+        } catch (retryError) {
+            console.error('❌ Retry also failed:', retryError.message);
             return false;
         }
     }
@@ -94,34 +100,36 @@ async function connectDB() {
 
 async function createIndexes() {
     try {
+        // Users collection
         await db.collection('users').createIndex({ userId: 1 }, { unique: true });
         await db.collection('users').createIndex({ referCode: 1 }, { unique: true, sparse: true });
         await db.collection('users').createIndex({ referredBy: 1 });
         await db.collection('users').createIndex({ balance: -1 });
         await db.collection('users').createIndex({ joinedAt: -1 });
         
-        await db.collection('transactions').createIndex({ userId: 1 });
-        await db.collection('transactions').createIndex({ type: 1 });
-        await db.collection('transactions').createIndex({ createdAt: -1 });
-        
-        await db.collection('gift_codes').createIndex({ code: 1 }, { unique: true });
-        await db.collection('gift_codes').createIndex({ expiresAt: 1 });
-        await db.collection('gift_codes').createIndex({ isActive: 1 });
-        
-        await db.collection('withdrawals').createIndex({ userId: 1 });
-        await db.collection('withdrawals').createIndex({ status: 1 });
-        await db.collection('withdrawals').createIndex({ createdAt: -1 });
-        await db.collection('withdrawals').createIndex({ txnId: 1 }, { unique: true, sparse: true });
-        
-        await db.collection('tasks').createIndex({ isActive: 1 });
-        await db.collection('tasks').createIndex({ createdAt: -1 });
-        
-        await db.collection('task_submissions').createIndex({ userId: 1 });
-        await db.collection('task_submissions').createIndex({ taskId: 1 });
-        await db.collection('task_submissions').createIndex({ status: 1 });
-        await db.collection('task_submissions').createIndex({ createdAt: -1 });
-        
+        // Admin config
         await db.collection('admin').createIndex({ type: 1 }, { unique: true });
+        
+        // Transactions
+        await db.collection('transactions').createIndex({ userId: 1, date: -1 });
+        await db.collection('transactions').createIndex({ transactionId: 1 }, { unique: true });
+        
+        // Gift codes
+        await db.collection('giftcodes').createIndex({ code: 1 }, { unique: true });
+        await db.collection('giftcodes').createIndex({ expiresAt: 1 });
+        
+        // Tasks
+        await db.collection('tasks').createIndex({ taskId: 1 }, { unique: true });
+        await db.collection('tasks').createIndex({ isActive: 1 });
+        
+        // Task submissions
+        await db.collection('tasksubmissions').createIndex({ submissionId: 1 }, { unique: true });
+        await db.collection('tasksubmissions').createIndex({ userId: 1, taskId: 1 });
+        await db.collection('tasksubmissions').createIndex({ status: 1, submittedAt: -1 });
+        
+        // Withdrawal requests
+        await db.collection('withdrawals').createIndex({ requestId: 1 }, { unique: true });
+        await db.collection('withdrawals').createIndex({ userId: 1, status: 1, createdAt: -1 });
         
         console.log('✅ Database indexes created');
     } catch (error) {
@@ -130,129 +138,179 @@ async function createIndexes() {
 }
 
 // ==========================================
-// SCENES SETUP
+// DEFAULT CONFIGURATIONS
 // ==========================================
 
-const stage = new Scenes.Stage([]);
-bot.use(session());
-bot.use(stage.middleware());
-
-// Scene handler factory
-function createScene(sceneId) {
-    return new Scenes.BaseScene(sceneId);
-}
-
-// Define all scenes
-const scenes = {
-    // User scenes
-    setWallet: createScene('set_wallet_scene'),
-    withdrawAmount: createScene('withdraw_amount_scene'),
-    enterGiftCode: createScene('enter_gift_code_scene'),
-    uploadTaskSS1: createScene('upload_task_ss1_scene'),
-    uploadTaskSS2: createScene('upload_task_ss2_scene'),
-    uploadTaskSS3: createScene('upload_task_ss3_scene'),
-    
-    // Admin scenes
-    broadcast: createScene('broadcast_scene'),
-    contactUserMessage: createScene('contact_user_message_scene'),
-    editStartImage: createScene('edit_start_image_scene'),
-    editStartMessage: createScene('edit_start_message_scene'),
-    editMenuImage: createScene('edit_menu_image_scene'),
-    editMenuMessage: createScene('edit_menu_message_scene'),
-    editTimer: createScene('edit_timer_scene'),
-    reorderChannels: createScene('reorder_channels_scene'),
-    reorderApps: createScene('reorder_apps_scene'),
-    editChannelSelect: createScene('edit_channel_select_scene'),
-    editChannelDetails: createScene('edit_channel_details_scene'),
-    editAppSelect: createScene('edit_app_select_scene'),
-    editAppDetails: createScene('edit_app_details_scene'),
-    reportToAdmin: createScene('report_to_admin_scene'),
-    addAdmin: createScene('add_admin_scene'),
-    manageImages: createScene('manage_images_scene'),
-    imageOverlay: createScene('image_overlay_scene'),
-    htmlGuide: createScene('html_guide_scene'),
-    
-    // New scenes for refer & earn features
-    createGiftCode: createScene('create_gift_code_scene'),
-    editGiftCode: createScene('edit_gift_code_scene'),
-    setBonusAmount: createScene('set_bonus_amount_scene'),
-    editBonusImage: createScene('edit_bonus_image_scene'),
-    addTask: createScene('add_task_scene'),
-    editTask: createScene('edit_task_scene'),
-    searchUsers: createScene('search_users_scene'),
-    searchWithdrawals: createScene('search_withdrawals_scene'),
-    processWithdrawal: createScene('process_withdrawal_scene'),
-    reviewTask: createScene('review_task_scene'),
-    setReferSettings: createScene('set_refer_settings_scene'),
-    setAdminCode: createScene('set_admin_code_scene'),
-    
-    // Channel management scenes
-    manageChannelVisibility: createScene('manage_channel_visibility_scene'),
-    manageChannelShow: createScene('manage_channel_show_scene'),
-    manageChannelAutoAccept: createScene('manage_channel_auto_accept_scene'),
-    manageChannelNeedJoin: createScene('manage_channel_need_join_scene'),
-    
-    // Add channel scenes
-    addChannelType: createScene('add_channel_type_scene'),
-    addPublicChannelName: createScene('add_public_channel_name_scene'),
-    addPublicChannelId: createScene('add_public_channel_id_scene'),
-    addPublicChannelLink: createScene('add_public_channel_link_scene'),
-    addPrivateChannelName: createScene('add_private_channel_name_scene'),
-    addPrivateChannelId: createScene('add_private_channel_id_scene'),
-    addPrivateChannelLink: createScene('add_private_channel_link_scene'),
-};
-
-// Register all scenes
-Object.values(scenes).forEach(scene => stage.register(scene));
-
-// ==========================================
-// ADMIN CONFIGURATION
-// ==========================================
-
-const ADMIN_IDS = process.env.ADMIN_IDS ? process.env.ADMIN_IDS.split(',').map(Number) : [8435248854, 5518423310];
-const ADMIN_CODE = process.env.ADMIN_CODE || 'ADMIN123';
-
-// Default configurations
 const DEFAULT_CONFIG = {
     startImage: 'https://res.cloudinary.com/dneusgyzc/image/upload/v1763670359/1000106281_cfg1ke.jpg',
-    startMessage: '👋 *Welcome to Earning Bot!*\n\n💰 *Earn money by completing tasks and referring friends*\n\n⚠️ _To access earning features, please join our channels first:_',
+    startMessage: '👋 *Welcome to Earning Bot!*\n\n💰 *Start earning money by completing simple tasks!*\n\n📊 *Current Statistics:*\n• Active Users: {total_users}\n• Total Paid: {total_paid}\n• Available Tasks: {available_tasks}\n\n⚠️ *Verification Required*\nJoin our channels to access earning features:',
     menuImage: 'https://res.cloudinary.com/dneusgyzc/image/upload/v1763670359/1000106281_cfg1ke.jpg',
-    menuMessage: '🎉 *Welcome to Earning Dashboard!*\n\n💰 *Balance:* {balance} ₹\n👥 *Referrals:* {referralCount}\n\nSelect an option below:',
-    codeTimer: 7200, // 2 hours in seconds
-    minWithdrawal: 100,
-    maxWithdrawal: 10000,
-    bonusAmount: 10,
-    bonusImage: 'https://res.cloudinary.com/dneusgyzc/image/upload/v1763670359/1000106281_cfg1ke.jpg',
-    referBonus: 50,
-    minReferBonus: 10,
-    maxReferBonus: 500,
+    menuMessage: '🎉 *Welcome to your Earning Dashboard!*\n\n💰 *Balance:* {balance} ₹\n👥 *Referrals:* {total_referrals}\n🎯 *Tasks Completed:* {tasks_completed}\n\nSelect an option below:',
+    codeTimer: 7200,
+    contactButton: true,
+    
+    // Referral settings
+    referral: {
+        minReferAmount: 10,
+        maxReferAmount: 100,
+        referBonus: 50,
+        minWithdrawRefer: 2,
+        enabled: true
+    },
+    
+    // Bonus settings
+    bonus: {
+        enabled: true,
+        amount: 25,
+        image: 'https://res.cloudinary.com/dneusgyzc/image/upload/v1763670359/1000106281_cfg1ke.jpg',
+        showAmountOverlay: true
+    },
+    
+    // Withdrawal settings
+    withdrawal: {
+        minAmount: 100,
+        maxAmount: 5000,
+        dailyLimit: 2000,
+        processingFee: 2,
+        enabled: true
+    },
+    
+    // Gift code settings
+    giftCode: {
+        defaultLength: 8,
+        minAmount: 10,
+        maxAmount: 1000,
+        defaultUses: 10,
+        defaultExpiry: 1440 // minutes
+    },
+    
+    // Task settings
+    tasks: {
+        minScreenshots: 1,
+        maxScreenshots: 5,
+        autoApprove: false
+    },
+    
+    // Channel levels
+    channelLevels: {
+        F: { name: 'Hidden', hide: false, verify: false },
+        S: { name: 'Show Only', hide: false, verify: false },
+        SS: { name: 'Auto Accept', hide: false, verify: true },
+        SSS: { name: 'Must Join', hide: false, verify: true }
+    },
+    
+    // Admin settings
     adminCode: ADMIN_CODE,
-    showContactButton: true,
-    bonusEnabled: true,
-    tasksEnabled: true,
-    withdrawalsEnabled: true,
-    channels: [],
-    giftCodes: [],
-    tasks: [],
-    uploadedImages: [],
+    botDisabled: false,
+    disabledMessage: '🚧 Bot is under maintenance. Please check back later.',
+    
+    // Image overlay settings
     imageOverlaySettings: {
         startImage: true,
         menuImage: true,
         bonusImage: true
     },
-    channelSettings: {
-        hiddenChannels: [],
-        showOnlyChannels: [],
-        autoAcceptChannels: [],
-        needJoinChannels: []
+    
+    // Display settings
+    displaySettings: {
+        channelsPerRow: 2,
+        usersPerPage: 20,
+        withdrawalsPerPage: 15,
+        tasksPerPage: 10
+    },
+    
+    // Statistics
+    statistics: {
+        totalEarned: 0,
+        totalWithdrawn: 0,
+        totalUsers: 0,
+        totalReferrals: 0,
+        totalTasks: 0
     }
 };
 
 // ==========================================
-// HELPER FUNCTIONS
+// DATABASE INITIALIZATION
 // ==========================================
 
-// Error cooldown system
+async function initBot() {
+    try {
+        console.log('🔄 Initializing bot configuration...');
+        
+        // Check if config exists
+        const config = await db.collection('admin').findOne({ type: 'config' });
+        
+        if (!config) {
+            console.log('📝 Creating new bot configuration...');
+            
+            await db.collection('admin').insertOne({
+                type: 'config',
+                admins: ADMIN_IDS,
+                mutedAdmins: [],
+                startImage: DEFAULT_CONFIG.startImage,
+                startMessage: DEFAULT_CONFIG.startMessage,
+                menuImage: DEFAULT_CONFIG.menuImage,
+                menuMessage: DEFAULT_CONFIG.menuMessage,
+                codeTimer: DEFAULT_CONFIG.codeTimer,
+                showContactButton: DEFAULT_CONFIG.contactButton,
+                channels: [],
+                uploadedImages: [],
+                imageOverlaySettings: DEFAULT_CONFIG.imageOverlaySettings,
+                referralSettings: DEFAULT_CONFIG.referral,
+                bonusSettings: DEFAULT_CONFIG.bonus,
+                withdrawalSettings: DEFAULT_CONFIG.withdrawal,
+                giftCodeSettings: DEFAULT_CONFIG.giftCode,
+                taskSettings: DEFAULT_CONFIG.tasks,
+                channelLevels: DEFAULT_CONFIG.channelLevels,
+                adminCode: DEFAULT_CONFIG.adminCode,
+                botDisabled: DEFAULT_CONFIG.botDisabled,
+                disabledMessage: DEFAULT_CONFIG.disabledMessage,
+                displaySettings: DEFAULT_CONFIG.displaySettings,
+                statistics: DEFAULT_CONFIG.statistics,
+                createdAt: new Date(),
+                updatedAt: new Date()
+            });
+            
+            console.log('✅ Created new bot configuration');
+        } else {
+            console.log('✅ Loaded existing bot configuration');
+            
+            // Update with new fields if missing
+            const updates = {};
+            
+            if (!config.referralSettings) updates.referralSettings = DEFAULT_CONFIG.referral;
+            if (!config.bonusSettings) updates.bonusSettings = DEFAULT_CONFIG.bonus;
+            if (!config.withdrawalSettings) updates.withdrawalSettings = DEFAULT_CONFIG.withdrawal;
+            if (!config.giftCodeSettings) updates.giftCodeSettings = DEFAULT_CONFIG.giftCode;
+            if (!config.taskSettings) updates.taskSettings = DEFAULT_CONFIG.tasks;
+            if (!config.channelLevels) updates.channelLevels = DEFAULT_CONFIG.channelLevels;
+            if (!config.adminCode) updates.adminCode = DEFAULT_CONFIG.adminCode;
+            if (!config.displaySettings) updates.displaySettings = DEFAULT_CONFIG.displaySettings;
+            if (!config.statistics) updates.statistics = DEFAULT_CONFIG.statistics;
+            
+            if (Object.keys(updates).length > 0) {
+                updates.updatedAt = new Date();
+                await db.collection('admin').updateOne(
+                    { type: 'config' },
+                    { $set: updates }
+                );
+                console.log('✅ Updated bot configuration with new fields');
+            }
+        }
+        
+        console.log(`✅ Bot initialized with ${ADMIN_IDS.length} admins`);
+        return true;
+        
+    } catch (error) {
+        console.error('❌ Error initializing bot:', error);
+        return false;
+    }
+}
+
+// ==========================================
+// ERROR HANDLING SYSTEM
+// ==========================================
+
 const errorCooldowns = new Map();
 
 function canProcessError(errorKey, maxAttempts = 2, cooldownMs = 60000) {
@@ -280,45 +338,44 @@ function resetErrorCooldown(errorKey) {
     console.log(`✅ Reset error cooldown for: ${errorKey}`);
 }
 
-// Emergency stop command
-bot.command('emergency', async (ctx) => {
-    console.log('🆘 Emergency stop triggered by:', ctx.from.id);
-    errorCooldowns.clear();
-    await ctx.reply('🆘 Emergency error reset executed. Bot should respond now.');
-    
-    setTimeout(async () => {
-        await ctx.reply('✅ Bot is now responsive. Try /start or /admin');
-    }, 1000);
-});
+// ==========================================
+// HELPER FUNCTIONS
+// ==========================================
 
-// Generate random refer code (5 alphanumeric characters)
+// Generate Random Code
+function generateCode(prefix = '', length = 8) {
+    try {
+        const characters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+        let code = prefix.toUpperCase();
+        
+        for (let i = code.length; i < length; i++) {
+            code += characters.charAt(Math.floor(Math.random() * characters.length));
+        }
+        
+        return code;
+    } catch (error) {
+        return prefix.toUpperCase() + Math.random().toString(36).substr(2, length - prefix.length).toUpperCase();
+    }
+}
+
+// Generate Referral Code (5 alphanumeric)
 function generateReferCode() {
-    const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
-    let code = '';
-    for (let i = 0; i < 5; i++) {
-        code += chars.charAt(Math.floor(Math.random() * chars.length));
-    }
-    return code;
+    return generateCode('', 5);
 }
 
-// Generate random transaction ID (7 alphanumeric characters)
-function generateTxnId() {
-    const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
-    let id = '';
-    for (let i = 0; i < 7; i++) {
-        id += chars.charAt(Math.floor(Math.random() * chars.length));
-    }
-    return id;
+// Generate Transaction ID
+function generateTransactionId() {
+    return 'TXN' + Date.now() + Math.random().toString(36).substr(2, 6).toUpperCase();
 }
 
-// Generate random gift code
-function generateGiftCode(length = 8) {
-    const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
-    let code = '';
-    for (let i = 0; i < length; i++) {
-        code += chars.charAt(Math.floor(Math.random() * chars.length));
-    }
-    return code;
+// Generate Withdrawal Request ID (7 alphanumeric)
+function generateWithdrawalId() {
+    return 'WD' + Date.now().toString(36).toUpperCase().substr(2, 5);
+}
+
+// Generate Task Submission ID
+function generateSubmissionId() {
+    return 'TSK' + Date.now() + Math.random().toString(36).substr(2, 4).toUpperCase();
 }
 
 // Escape markdown characters
@@ -345,28 +402,27 @@ function escapeMarkdown(text) {
         .replace(/\!/g, '\\!');
 }
 
-// Format message for display (remove escaping for HTML)
-function formatMessageForDisplay(text) {
+// Format HTML for display (shows tags only when needed)
+function formatHTMLForDisplay(text, showTags = false) {
     if (!text) return '';
-    return text.toString()
-        .replace(/\\_/g, '_')
-        .replace(/\\*/g, '*')
-        .replace(/\\\[/g, '[')
-        .replace(/\\\]/g, ']')
-        .replace(/\\(/g, '(')
-        .replace(/\\)/g, ')')
-        .replace(/\\~/g, '~')
-        .replace(/\\`/g, '`')
-        .replace(/\\>/g, '>')
-        .replace(/\\#/g, '#')
-        .replace(/\\+/g, '+')
-        .replace(/\\-/g, '-')
-        .replace(/\\=/g, '=')
-        .replace(/\\|/g, '|')
-        .replace(/\\{/g, '{')
-        .replace(/\\}/g, '}')
-        .replace(/\\./g, '.')
-        .replace(/\\!/g, '!');
+    
+    if (showTags) {
+        // Show with code tags for copying
+        return `<code>${escapeMarkdown(text)}</code>`;
+    } else {
+        // Remove HTML tags for display but keep content
+        return text
+            .replace(/<b>(.*?)<\/b>/gi, '*$1*')
+            .replace(/<i>(.*?)<\/i>/gi, '_$1_')
+            .replace(/<u>(.*?)<\/u>/gi, '$1')
+            .replace(/<code>(.*?)<\/code>/gi, '`$1`')
+            .replace(/<pre>(.*?)<\/pre>/gis, '```\n$1\n```')
+            .replace(/<a href="(.*?)">(.*?)<\/a>/gi, '[$2]($1)')
+            .replace(/<[^>]*>/g, '')
+            .replace(/&amp;/g, '&')
+            .replace(/&lt;/g, '<')
+            .replace(/&gt;/g, '>');
+    }
 }
 
 // Safe send message with HTML parse mode
@@ -374,12 +430,16 @@ async function safeSendMessage(ctx, text, options = {}) {
     try {
         return await ctx.reply(text, { 
             parse_mode: 'HTML',
+            disable_web_page_preview: true,
             ...options 
         });
     } catch (error) {
         console.error('Error sending message:', error.message);
         // Try without HTML parsing
-        return await ctx.reply(text, options);
+        return await ctx.reply(text, { 
+            ...options,
+            disable_web_page_preview: true 
+        });
     }
 }
 
@@ -388,55 +448,16 @@ async function safeEditMessage(ctx, text, options = {}) {
     try {
         return await ctx.editMessageText(text, { 
             parse_mode: 'HTML',
+            disable_web_page_preview: true,
             ...options 
         });
     } catch (error) {
         console.error('Error editing message:', error.message);
         // Try without HTML parsing
-        return await ctx.editMessageText(text, options);
-    }
-}
-
-// Get active admins (exclude muted admins)
-async function getActiveAdmins() {
-    try {
-        const config = await db.collection('admin').findOne({ type: 'config' });
-        if (!config) return ADMIN_IDS;
-        
-        const allAdmins = config.admins || ADMIN_IDS;
-        const mutedAdmins = config.mutedAdmins || [];
-        
-        return allAdmins.filter(adminId => !mutedAdmins.includes(adminId));
-    } catch (error) {
-        console.error('Error getting active admins:', error);
-        return ADMIN_IDS;
-    }
-}
-
-// Notify ALL Admins (excluding muted ones)
-async function notifyAdmin(text, excludeMuted = true) {
-    try {
-        const config = await db.collection('admin').findOne({ type: 'config' });
-        if (!config) return;
-        
-        let allAdmins = config.admins || ADMIN_IDS;
-        
-        if (excludeMuted) {
-            const mutedAdmins = config.mutedAdmins || [];
-            allAdmins = allAdmins.filter(adminId => !mutedAdmins.includes(adminId));
-        }
-        
-        const promises = allAdmins.map(async (adminId) => {
-            try {
-                await bot.telegram.sendMessage(adminId, text, { parse_mode: 'HTML' });
-            } catch (error) {
-                console.error(`Failed to notify admin ${adminId}:`, error.message);
-            }
+        return await ctx.editMessageText(text, { 
+            ...options,
+            disable_web_page_preview: true 
         });
-        
-        await Promise.allSettled(promises);
-    } catch (error) {
-        console.error('Error in notifyAdmin:', error);
     }
 }
 
@@ -453,20 +474,66 @@ async function isAdmin(userId) {
     }
 }
 
-// Get user variables for template replacement
-function getUserVariables(user, additionalVars = {}) {
+// Get active admins (exclude muted)
+async function getActiveAdmins() {
+    try {
+        const config = await db.collection('admin').findOne({ type: 'config' });
+        if (!config) return ADMIN_IDS;
+        
+        const allAdmins = config.admins || ADMIN_IDS;
+        const mutedAdmins = config.mutedAdmins || [];
+        
+        return allAdmins.filter(adminId => !mutedAdmins.includes(adminId));
+    } catch (error) {
+        console.error('Error getting active admins:', error);
+        return ADMIN_IDS;
+    }
+}
+
+// Notify Admins
+async function notifyAdmin(text, excludeMuted = true) {
+    try {
+        const config = await db.collection('admin').findOne({ type: 'config' });
+        if (!config) return;
+        
+        let allAdmins = config.admins || ADMIN_IDS;
+        
+        if (excludeMuted) {
+            const mutedAdmins = config.mutedAdmins || [];
+            allAdmins = allAdmins.filter(adminId => !mutedAdmins.includes(adminId));
+        }
+        
+        const promises = allAdmins.map(async (adminId) => {
+            try {
+                await bot.telegram.sendMessage(adminId, text, { 
+                    parse_mode: 'HTML',
+                    disable_web_page_preview: true 
+                });
+            } catch (error) {
+                console.error(`Failed to notify admin ${adminId}:`, error.message);
+            }
+        });
+        
+        await Promise.allSettled(promises);
+    } catch (error) {
+        console.error('Error in notifyAdmin:', error);
+    }
+}
+
+// Get user variables for message replacement
+function getUserVariables(user) {
     try {
         const firstName = user.first_name || '';
         const lastName = user.last_name || '';
         const fullName = [firstName, lastName].filter(Boolean).join(' ').trim();
+        const username = user.username ? `@${user.username}` : '';
         
         return {
             first_name: firstName,
             last_name: lastName,
             full_name: fullName,
-            username: user.username ? `@${user.username}` : 'No username',
-            user_id: user.id,
-            ...additionalVars
+            username: username,
+            name: firstName || username || 'User'
         };
     } catch (error) {
         return {
@@ -474,8 +541,7 @@ function getUserVariables(user, additionalVars = {}) {
             last_name: '',
             full_name: '',
             username: '',
-            user_id: user?.id || 'Unknown',
-            ...additionalVars
+            name: 'User'
         };
     }
 }
@@ -492,6 +558,24 @@ function replaceVariables(text, variables) {
     } catch (error) {
         return text;
     }
+}
+
+// Format time remaining
+function formatTimeRemaining(seconds) {
+    try {
+        const hours = Math.floor(seconds / 3600);
+        const minutes = Math.floor((seconds % 3600) / 60);
+        const secs = seconds % 60;
+        
+        return `${hours}h ${minutes}m ${secs}s`;
+    } catch (error) {
+        return 'Error';
+    }
+}
+
+// Format currency
+function formatCurrency(amount) {
+    return `₹${parseFloat(amount).toFixed(2)}`;
 }
 
 // Upload to Cloudinary
@@ -526,8 +610,33 @@ async function uploadToCloudinary(fileBuffer, folder = 'bot_images') {
     }
 }
 
-// Get Cloudinary URL with name overlay
-async function getCloudinaryUrlWithName(originalUrl, name, imageType = 'startImage') {
+// Check if image URL is valid
+async function isValidImageUrl(url) {
+    try {
+        if (!url.startsWith('http')) return false;
+        
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 5000);
+        
+        try {
+            const response = await fetch(url, { 
+                method: 'HEAD',
+                signal: controller.signal 
+            });
+            clearTimeout(timeoutId);
+            const contentType = response.headers.get('content-type');
+            return contentType && contentType.startsWith('image/');
+        } catch (error) {
+            clearTimeout(timeoutId);
+            return false;
+        }
+    } catch (error) {
+        return false;
+    }
+}
+
+// Get Cloudinary URL with overlay
+async function getCloudinaryUrlWithName(originalUrl, name, amount = null, imageType = 'startImage') {
     try {
         if (!originalUrl.includes('cloudinary.com')) {
             return originalUrl;
@@ -550,13 +659,10 @@ async function getCloudinaryUrlWithName(originalUrl, name, imageType = 'startIma
         }
         
         if (!shouldAddOverlay) {
-            if (originalUrl.includes('{name}')) {
-                return originalUrl.replace(/{name}/g, name || 'User');
-            }
             return originalUrl;
         }
         
-        const cleanName = (name || 'User').replace(/[^\w\s\-\.]/gi, '').trim() || 'User';
+        const cleanName = (name || 'User').substring(0, 15);
         
         if (originalUrl.includes('{name}')) {
             return originalUrl.replace(/{name}/g, cleanName);
@@ -565,11 +671,15 @@ async function getCloudinaryUrlWithName(originalUrl, name, imageType = 'startIma
         if (originalUrl.includes('/upload/')) {
             const parts = originalUrl.split('/upload/');
             if (parts.length === 2) {
-                const transformationPart = parts[1];
-                const encodedName = encodeURIComponent(cleanName);
-                const textOverlay = `l_text:Stalinist%20One_140_bold:${encodedName},co_rgb:00e5ff,g_center/`;
-                const newTransformation = textOverlay + transformationPart;
-                return `${parts[0]}/upload/${newTransformation}`;
+                let overlayText = '';
+                
+                if (amount) {
+                    overlayText = `l_text:Arial_60_bold:${encodeURIComponent(formatCurrency(amount))},co_rgb:FFD700,g_north,y_40/l_text:Arial_30:${encodeURIComponent(cleanName)},co_rgb:FFFFFF,g_south,y_20/`;
+                } else {
+                    overlayText = `l_text:Arial_50_bold:${encodeURIComponent(cleanName)},co_rgb:00E5FF,g_center/`;
+                }
+                
+                return `${parts[0]}/upload/${overlayText}${parts[1]}`;
             }
         }
         
@@ -580,81 +690,104 @@ async function getCloudinaryUrlWithName(originalUrl, name, imageType = 'startIma
     }
 }
 
-// Check if URL contains {name} variable
-function hasNameVariable(url) {
-    return url && url.includes('{name}');
+// Get user statistics
+async function getUserStats(userId) {
+    try {
+        const user = await db.collection('users').findOne({ userId: userId });
+        if (!user) return null;
+        
+        const referrals = await db.collection('users').countDocuments({ referredBy: userId });
+        const transactions = await db.collection('transactions').countDocuments({ userId: userId });
+        const tasksCompleted = await db.collection('tasksubmissions').countDocuments({ 
+            userId: userId, 
+            status: 'approved' 
+        });
+        
+        return {
+            balance: user.balance || 0,
+            referrals: referrals,
+            transactions: transactions,
+            tasksCompleted: tasksCompleted,
+            joinedAt: user.joinedAt,
+            wallet: user.wallet || 'Not set'
+        };
+    } catch (error) {
+        console.error('Error getting user stats:', error);
+        return null;
+    }
 }
 
-// Check if image URL is valid
-async function isValidImageUrl(url) {
+// Add transaction
+async function addTransaction(userId, type, amount, description = '') {
     try {
-        if (!url.startsWith('http')) return false;
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 5000);
+        const transactionId = generateTransactionId();
+        const transaction = {
+            transactionId: transactionId,
+            userId: userId,
+            type: type, // 'deposit', 'withdrawal', 'referral', 'task', 'bonus', 'giftcode'
+            amount: parseFloat(amount),
+            description: description,
+            date: new Date(),
+            status: 'completed'
+        };
         
-        const response = await fetch(url, { 
-            method: 'HEAD',
-            signal: controller.signal 
-        });
-        clearTimeout(timeoutId);
-        const contentType = response.headers.get('content-type');
-        return contentType && contentType.startsWith('image/');
+        await db.collection('transactions').insertOne(transaction);
+        return transactionId;
     } catch (error) {
-        clearTimeout(timeoutId);
+        console.error('Error adding transaction:', error);
+        return null;
+    }
+}
+
+// Update user balance
+async function updateUserBalance(userId, amount, type = 'add') {
+    try {
+        const user = await db.collection('users').findOne({ userId: userId });
+        if (!user) return false;
+        
+        const currentBalance = user.balance || 0;
+        let newBalance = currentBalance;
+        
+        if (type === 'add') {
+            newBalance = currentBalance + parseFloat(amount);
+        } else if (type === 'subtract') {
+            newBalance = currentBalance - parseFloat(amount);
+            if (newBalance < 0) newBalance = 0;
+        }
+        
+        await db.collection('users').updateOne(
+            { userId: userId },
+            { $set: { balance: newBalance, updatedAt: new Date() } }
+        );
+        
+        // Update global statistics
+        if (type === 'add') {
+            await db.collection('admin').updateOne(
+                { type: 'config' },
+                { $inc: { 'statistics.totalEarned': parseFloat(amount) } }
+            );
+        }
+        
+        return true;
+    } catch (error) {
+        console.error('Error updating user balance:', error);
         return false;
     }
 }
 
-// Format time remaining
-function formatTimeRemaining(seconds) {
-    try {
-        const hours = Math.floor(seconds / 3600);
-        const minutes = Math.floor((seconds % 3600) / 60);
-        const secs = seconds % 60;
-        
-        return `${hours}h ${minutes}m ${secs}s`;
-    } catch (error) {
-        return 'Error';
-    }
-}
+// ==========================================
+// CHANNEL MANAGEMENT FUNCTIONS
+// ==========================================
 
-// Get unjoined channels for a user
-async function getUnjoinedChannels(userId) {
+// Get channels by level
+async function getChannelsByLevel(level) {
     try {
         const config = await db.collection('admin').findOne({ type: 'config' });
-        if (!config || !config.channels || config.channels.length === 0) return [];
+        const channels = config?.channels || [];
         
-        const unjoined = [];
-        const promises = config.channels.map(async (channel) => {
-            // Skip hidden channels
-            if (config.channelSettings?.hiddenChannels?.includes(channel.id)) {
-                return;
-            }
-            
-            // Skip "just show" channels
-            if (config.channelSettings?.showOnlyChannels?.includes(channel.id)) {
-                return;
-            }
-            
-            // Only check "need join" channels
-            if (!config.channelSettings?.needJoinChannels?.includes(channel.id)) {
-                return;
-            }
-            
-            try {
-                const member = await bot.telegram.getChatMember(channel.id, userId);
-                if (member.status === 'left' || member.status === 'kicked') {
-                    unjoined.push(channel);
-                }
-            } catch (error) {
-                unjoined.push(channel);
-            }
-        });
-        
-        await Promise.allSettled(promises);
-        return unjoined;
+        return channels.filter(channel => channel.level === level && !channel.hide);
     } catch (error) {
-        console.error('Error in getUnjoinedChannels:', error);
+        console.error('Error getting channels by level:', error);
         return [];
     }
 }
@@ -663,249 +796,125 @@ async function getUnjoinedChannels(userId) {
 async function getChannelsToDisplay(userId) {
     try {
         const config = await db.collection('admin').findOne({ type: 'config' });
-        if (!config || !config.channels || config.channels.length === 0) return [];
+        const channels = config?.channels || [];
         
         const channelsToDisplay = [];
-        const promises = config.channels.map(async (channel) => {
+        const mustJoinChannels = [];
+        
+        for (const channel of channels) {
             // Skip hidden channels
-            if (config.channelSettings?.hiddenChannels?.includes(channel.id)) {
-                return;
-            }
+            if (channel.hide) continue;
             
-            // Always show "just show" channels
-            if (config.channelSettings?.showOnlyChannels?.includes(channel.id)) {
-                channelsToDisplay.push(channel);
-                return;
-            }
+            // Skip F level channels
+            if (channel.level === 'F') continue;
             
-            // For "need join" channels, check if user has joined
-            if (config.channelSettings?.needJoinChannels?.includes(channel.id)) {
-                let userHasJoined = false;
-                
-                try {
-                    const member = await bot.telegram.getChatMember(channel.id, userId);
-                    if (member.status !== 'left' && member.status !== 'kicked') {
-                        userHasJoined = true;
-                    }
-                } catch (error) {
-                    // Can't check membership
+            // Check if user has joined this channel
+            let userHasJoined = false;
+            
+            try {
+                const member = await bot.telegram.getChatMember(channel.id, userId);
+                if (member.status !== 'left' && member.status !== 'kicked') {
+                    userHasJoined = true;
                 }
-                
+            } catch (error) {
+                // Can't check membership
+            }
+            
+            // For SSS level channels (Must Join)
+            if (channel.level === 'SSS') {
+                if (!userHasJoined) {
+                    mustJoinChannels.push(channel);
+                }
+                continue;
+            }
+            
+            // For S level channels (Show Only) - always show
+            if (channel.level === 'S') {
+                channelsToDisplay.push(channel);
+                continue;
+            }
+            
+            // For SS level channels (Auto Accept) - show if not joined
+            if (channel.level === 'SS') {
                 if (!userHasJoined) {
                     channelsToDisplay.push(channel);
                 }
+                continue;
             }
-        });
+            
+            // For other channels or no level - show if not joined
+            if (!userHasJoined) {
+                channelsToDisplay.push(channel);
+            }
+        }
         
-        await Promise.allSettled(promises);
-        return channelsToDisplay;
+        return {
+            display: channelsToDisplay,
+            mustJoin: mustJoinChannels
+        };
     } catch (error) {
         console.error('Error in getChannelsToDisplay:', error);
-        return [];
+        return { display: [], mustJoin: [] };
     }
 }
 
-// Add transaction to user history
-async function addTransaction(userId, amount, type, description = '') {
+// Check if user has joined all required channels
+async function hasJoinedAllChannels(userId) {
     try {
-        const transaction = {
-            userId: userId,
-            amount: amount,
-            type: type, // 'credit', 'debit', 'referral', 'bonus', 'task', 'withdrawal'
-            description: description,
-            txnId: generateTxnId(),
-            createdAt: new Date()
-        };
-        
-        await db.collection('transactions').insertOne(transaction);
-        
-        // Update user balance
-        if (type === 'credit' || type === 'referral' || type === 'bonus' || type === 'task') {
-            await db.collection('users').updateOne(
-                { userId: userId },
-                { $inc: { balance: amount } }
-            );
-        } else if (type === 'debit' || type === 'withdrawal') {
-            await db.collection('users').updateOne(
-                { userId: userId },
-                { $inc: { balance: -amount } }
-            );
-        }
-        
-        return transaction;
+        const { mustJoin } = await getChannelsToDisplay(userId);
+        return mustJoin.length === 0;
     } catch (error) {
-        console.error('Error adding transaction:', error);
-        throw error;
-    }
-}
-
-// Get user transactions
-async function getUserTransactions(userId, limit = 15) {
-    try {
-        return await db.collection('transactions')
-            .find({ userId: userId })
-            .sort({ createdAt: -1 })
-            .limit(limit)
-            .toArray();
-    } catch (error) {
-        console.error('Error getting transactions:', error);
-        return [];
-    }
-}
-
-// Get user referrals
-async function getUserReferrals(userId, page = 1, limit = 20) {
-    try {
-        const skip = (page - 1) * limit;
-        const referrals = await db.collection('users')
-            .find({ referredBy: userId })
-            .sort({ joinedAt: -1 })
-            .skip(skip)
-            .limit(limit)
-            .toArray();
-        
-        const totalReferrals = await db.collection('users').countDocuments({ referredBy: userId });
-        const totalPages = Math.ceil(totalReferrals / limit);
-        
-        return {
-            referrals,
-            page,
-            totalPages,
-            totalReferrals,
-            hasNext: page < totalPages,
-            hasPrev: page > 1
-        };
-    } catch (error) {
-        console.error('Error getting referrals:', error);
-        return { referrals: [], page: 1, totalPages: 0, totalReferrals: 0, hasNext: false, hasPrev: false };
-    }
-}
-
-// Get paginated users
-async function getPaginatedUsers(page = 1, limit = 20) {
-    try {
-        const skip = (page - 1) * limit;
-        const users = await db.collection('users')
-            .find({})
-            .sort({ joinedAt: -1 })
-            .skip(skip)
-            .limit(limit)
-            .toArray();
-        
-        const totalUsers = await db.collection('users').countDocuments();
-        const totalPages = Math.ceil(totalUsers / limit);
-        
-        return {
-            users,
-            page,
-            totalPages,
-            totalUsers,
-            hasNext: page < totalPages,
-            hasPrev: page > 1
-        };
-    } catch (error) {
-        console.error('Error getting paginated users:', error);
-        return { users: [], page: 1, totalPages: 0, totalUsers: 0, hasNext: false, hasPrev: false };
-    }
-}
-
-// Search users
-async function searchUsers(query) {
-    try {
-        const users = await db.collection('users').find({
-            $or: [
-                { userId: { $regex: query, $options: 'i' } },
-                { username: { $regex: query, $options: 'i' } },
-                { firstName: { $regex: query, $options: 'i' } },
-                { lastName: { $regex: query, $options: 'i' } },
-                { referCode: { $regex: query, $options: 'i' } }
-            ]
-        }).limit(50).toArray();
-        
-        return users;
-    } catch (error) {
-        console.error('Error searching users:', error);
-        return [];
-    }
-}
-
-// ==========================================
-// DATABASE INITIALIZATION
-// ==========================================
-
-async function initBot() {
-    try {
-        // Check if config exists
-        const config = await db.collection('admin').findOne({ type: 'config' });
-        
-        if (!config) {
-            await db.collection('admin').insertOne({
-                type: 'config',
-                admins: ADMIN_IDS,
-                mutedAdmins: [],
-                adminCode: ADMIN_CODE,
-                startImage: DEFAULT_CONFIG.startImage,
-                startMessage: DEFAULT_CONFIG.startMessage,
-                menuImage: DEFAULT_CONFIG.menuImage,
-                menuMessage: DEFAULT_CONFIG.menuMessage,
-                codeTimer: DEFAULT_CONFIG.codeTimer,
-                minWithdrawal: DEFAULT_CONFIG.minWithdrawal,
-                maxWithdrawal: DEFAULT_CONFIG.maxWithdrawal,
-                bonusAmount: DEFAULT_CONFIG.bonusAmount,
-                bonusImage: DEFAULT_CONFIG.bonusImage,
-                referBonus: DEFAULT_CONFIG.referBonus,
-                minReferBonus: DEFAULT_CONFIG.minReferBonus,
-                maxReferBonus: DEFAULT_CONFIG.maxReferBonus,
-                showContactButton: DEFAULT_CONFIG.showContactButton,
-                bonusEnabled: DEFAULT_CONFIG.bonusEnabled,
-                tasksEnabled: DEFAULT_CONFIG.tasksEnabled,
-                withdrawalsEnabled: DEFAULT_CONFIG.withdrawalsEnabled,
-                channels: DEFAULT_CONFIG.channels,
-                giftCodes: DEFAULT_CONFIG.giftCodes,
-                tasks: DEFAULT_CONFIG.tasks,
-                uploadedImages: DEFAULT_CONFIG.uploadedImages,
-                imageOverlaySettings: DEFAULT_CONFIG.imageOverlaySettings,
-                channelSettings: DEFAULT_CONFIG.channelSettings,
-                createdAt: new Date(),
-                updatedAt: new Date()
-            });
-            
-            console.log('✅ Created new bot configuration');
-        } else {
-            // Update with new fields if missing
-            const updates = {};
-            if (!config.adminCode) updates.adminCode = ADMIN_CODE;
-            if (!config.minWithdrawal) updates.minWithdrawal = DEFAULT_CONFIG.minWithdrawal;
-            if (!config.maxWithdrawal) updates.maxWithdrawal = DEFAULT_CONFIG.maxWithdrawal;
-            if (!config.bonusAmount) updates.bonusAmount = DEFAULT_CONFIG.bonusAmount;
-            if (!config.bonusImage) updates.bonusImage = DEFAULT_CONFIG.bonusImage;
-            if (!config.referBonus) updates.referBonus = DEFAULT_CONFIG.referBonus;
-            if (!config.minReferBonus) updates.minReferBonus = DEFAULT_CONFIG.minReferBonus;
-            if (!config.maxReferBonus) updates.maxReferBonus = DEFAULT_CONFIG.maxReferBonus;
-            if (config.bonusEnabled === undefined) updates.bonusEnabled = DEFAULT_CONFIG.bonusEnabled;
-            if (config.tasksEnabled === undefined) updates.tasksEnabled = DEFAULT_CONFIG.tasksEnabled;
-            if (config.withdrawalsEnabled === undefined) updates.withdrawalsEnabled = DEFAULT_CONFIG.withdrawalsEnabled;
-            if (!config.channelSettings) updates.channelSettings = DEFAULT_CONFIG.channelSettings;
-            
-            if (Object.keys(updates).length > 0) {
-                updates.updatedAt = new Date();
-                await db.collection('admin').updateOne(
-                    { type: 'config' },
-                    { $set: updates }
-                );
-                console.log('✅ Updated bot configuration with new fields');
-            } else {
-                console.log('✅ Loaded existing bot configuration');
-            }
-        }
-        
-        console.log(`✅ Bot initialized with ${ADMIN_IDS.length} default admins`);
-        return true;
-    } catch (error) {
-        console.error('❌ Error initializing bot:', error);
+        console.error('Error checking joined channels:', error);
         return false;
     }
 }
+
+// ==========================================
+// SCENES SETUP
+// ==========================================
+
+const stage = new Scenes.Stage([]);
+bot.use(session());
+bot.use(stage.middleware());
+
+// Scene factory
+function createScene(sceneId) {
+    return new Scenes.BaseScene(sceneId);
+}
+
+// Define all scenes
+const scenes = {
+    // User scenes
+    contactUserMessage: createScene('contact_user_message_scene'),
+    setWallet: createScene('set_wallet_scene'),
+    withdrawAmount: createScene('withdraw_amount_scene'),
+    enterGiftCode: createScene('enter_gift_code_scene'),
+    taskSubmission: createScene('task_submission_scene'),
+    
+    // Admin scenes
+    broadcast: createScene('broadcast_scene'),
+    addChannel: createScene('add_channel_scene'),
+    editStartImage: createScene('edit_start_image_scene'),
+    editStartMessage: createScene('edit_start_message_scene'),
+    editMenuImage: createScene('edit_menu_image_scene'),
+    editMenuMessage: createScene('edit_menu_message_scene'),
+    editTimer: createScene('edit_timer_scene'),
+    addAdmin: createScene('add_admin_scene'),
+    imageOverlay: createScene('image_overlay_scene'),
+    createGiftCode: createScene('create_gift_code_scene'),
+    editGiftCode: createScene('edit_gift_code_scene'),
+    editBonusSettings: createScene('edit_bonus_settings_scene'),
+    editReferralSettings: createScene('edit_referral_settings_scene'),
+    editWithdrawalSettings: createScene('edit_withdrawal_settings_scene'),
+    addTask: createScene('add_task_scene'),
+    editTask: createScene('edit_task_scene'),
+    processWithdrawal: createScene('process_withdrawal_scene'),
+    searchUsers: createScene('search_users_scene'),
+    searchWithdrawals: createScene('search_withdrawals_scene')
+};
+
+// Register all scenes
+Object.values(scenes).forEach(scene => stage.register(scene));
 
 // ==========================================
 // USER FLOW - START COMMAND
@@ -918,48 +927,72 @@ bot.start(async (ctx) => {
         const botDisabled = config?.botDisabled || false;
         
         if (botDisabled) {
-            const disabledMessage = config?.disabledMessage || '🚧 Bot is under maintenance. \n Please check back later.';
-            await safeSendMessage(ctx, disabledMessage, {
-                parse_mode: 'HTML'
-            });
+            const disabledMessage = config?.disabledMessage || DEFAULT_CONFIG.disabledMessage;
+            await safeSendMessage(ctx, disabledMessage);
             return;
         }
         
         const user = ctx.from;
         const userId = user.id;
-        const startPayload = ctx.startPayload; // Get referral code from start payload
+        const args = ctx.message.text.split(' ');
+        const referCode = args.length > 1 ? args[1] : null;
         
         // Check if user exists
         let userData = await db.collection('users').findOne({ userId: userId });
         
         if (!userData) {
-            // Generate refer code for new user
-            let referCode;
-            let isUnique = false;
+            // New user registration
+            const referCodeToUse = await generateReferCode();
+            userData = {
+                userId: userId,
+                firstName: user.first_name || '',
+                lastName: user.last_name || '',
+                username: user.username || '',
+                referCode: referCodeToUse,
+                referredBy: null,
+                referrals: [],
+                balance: 0,
+                wallet: null,
+                transactions: [],
+                tasksCompleted: [],
+                giftCodesUsed: [],
+                joinedAll: false,
+                joinedAt: new Date(),
+                lastActive: new Date(),
+                updatedAt: new Date()
+            };
             
-            while (!isUnique) {
-                referCode = generateReferCode();
-                const existing = await db.collection('users').findOne({ referCode: referCode });
-                if (!existing) isUnique = true;
-            }
-            
-            // Check if referred by someone
-            let referredBy = null;
-            if (startPayload) {
-                const referrer = await db.collection('users').findOne({ referCode: startPayload });
-                if (referrer) {
-                    referredBy = referrer.userId;
+            // Handle referral
+            if (referCode) {
+                const referrer = await db.collection('users').findOne({ referCode: referCode });
+                if (referrer && referrer.userId !== userId) {
+                    userData.referredBy = referrer.userId;
                     
                     // Add referral bonus to referrer
-                    const referBonus = config?.referBonus || DEFAULT_CONFIG.referBonus;
-                    await addTransaction(referrer.userId, referBonus, 'referral', `Referral bonus for ${user.first_name || 'new user'}`);
+                    const referralSettings = config?.referralSettings || DEFAULT_CONFIG.referral;
+                    const referBonus = referralSettings.referBonus || 50;
+                    
+                    await updateUserBalance(referrer.userId, referBonus, 'add');
+                    await addTransaction(referrer.userId, 'referral', referBonus, `Referral bonus for ${user.first_name || 'new user'}`);
+                    
+                    // Update referrer's referrals list
+                    await db.collection('users').updateOne(
+                        { userId: referrer.userId },
+                        { $push: { referrals: userId } }
+                    );
+                    
+                    // Update statistics
+                    await db.collection('admin').updateOne(
+                        { type: 'config' },
+                        { $inc: { 'statistics.totalReferrals': 1 } }
+                    );
                     
                     // Notify referrer
                     try {
                         await bot.telegram.sendMessage(
                             referrer.userId,
-                            `🎉 *New Referral!*\n\n👤 ${user.first_name || 'User'} joined using your referral link!\n💰 You earned ${referBonus} ₹ referral bonus!`,
-                            { parse_mode: 'Markdown' }
+                            `🎉 *New Referral!*\n\n👤 ${user.first_name || 'New user'} joined using your referral link!\n💰 You earned ${formatCurrency(referBonus)} referral bonus!`,
+                            { parse_mode: 'HTML' }
                         );
                     } catch (error) {
                         console.error('Failed to notify referrer:', error);
@@ -967,33 +1000,20 @@ bot.start(async (ctx) => {
                 }
             }
             
-            // Create new user
-            userData = {
-                userId: userId,
-                firstName: user.first_name,
-                lastName: user.last_name,
-                username: user.username,
-                referCode: referCode,
-                referredBy: referredBy,
-                balance: 0,
-                wallet: '',
-                totalEarned: 0,
-                totalWithdrawn: 0,
-                referralCount: 0,
-                joinedAll: false,
-                joinedAt: new Date(),
-                lastActive: new Date(),
-                codeTimestamps: {}
-            };
-            
             await db.collection('users').insertOne(userData);
             
-            // Notify admins about new user
+            // Update statistics
+            await db.collection('admin').updateOne(
+                { type: 'config' },
+                { $inc: { 'statistics.totalUsers': 1 } }
+            );
+            
+            // Notify admin about new user
             const userLink = user.username ? `@${user.username}` : user.first_name || 'Unknown';
-            const referInfo = referredBy ? ` (Referred by: ${referredBy})` : '';
-            await notifyAdmin(`🆕 <b>New User Joined</b>\n\n👤 User: ${userLink}\n🆔 ID: <code>${userId}</code>\n📝 Refer Code: <code>${referCode}</code>${referInfo}`);
+            await notifyAdmin(`🆕 *New User Joined*\n\n👤 User: ${userLink}\n🆔 ID: \`${userId}\`\n📅 Date: ${new Date().toLocaleString()}\n${referCode ? `🔗 Referred by: ${referCode}` : ''}`);
+            
         } else {
-            // Update last active
+            // Update last active time
             await db.collection('users').updateOne(
                 { userId: userId },
                 { $set: { lastActive: new Date() } }
@@ -1002,21 +1022,10 @@ bot.start(async (ctx) => {
         
         // Show start screen
         await showStartScreen(ctx);
+        
     } catch (error) {
         console.error('Start command error:', error);
-        ctx.session.lastError = {
-            command: '/start',
-            error: error.message
-        };
-        
-        await safeSendMessage(ctx, '❌ An error occurred. Please try again.', {
-            reply_markup: {
-                inline_keyboard: [[
-                    { text: '📞 Contact Admin', callback_data: 'contact_admin' },
-                    { text: '🔄 Try Again', callback_data: 'back_to_start' }
-                ]]
-            }
-        });
+        await safeSendMessage(ctx, '❌ An error occurred. Please try again.');
     }
 });
 
@@ -1027,60 +1036,92 @@ async function showStartScreen(ctx) {
         const userId = user.id;
         
         // Get configuration
-        const [config, channelsToDisplay] = await Promise.all([
+        const [config, channelsData] = await Promise.all([
             db.collection('admin').findOne({ type: 'config' }),
             getChannelsToDisplay(userId)
         ]);
         
-        // Prepare user variables
         const userVars = getUserVariables(user);
+        const userStats = await getUserStats(userId);
         
-        // Prepare image URL with name
+        // Prepare statistics variables
+        const stats = config?.statistics || DEFAULT_CONFIG.statistics;
+        const statVars = {
+            total_users: stats.totalUsers || 0,
+            total_paid: formatCurrency(stats.totalWithdrawn || 0),
+            available_tasks: stats.totalTasks || 0
+        };
+        
+        // Prepare image
         let startImage = config?.startImage || DEFAULT_CONFIG.startImage;
-        const imagePromise = getCloudinaryUrlWithName(startImage, userVars.full_name, 'startImage');
+        startImage = await getCloudinaryUrlWithName(startImage, userVars.name, null, 'startImage');
         
         // Prepare message
         let startMessage = config?.startMessage || DEFAULT_CONFIG.startMessage;
         startMessage = replaceVariables(startMessage, userVars);
+        startMessage = replaceVariables(startMessage, statVars);
         
-        // Create channel buttons (2 per row)
+        // Create buttons
         const buttons = [];
         
-        if (channelsToDisplay.length > 0) {
-            // Group channels 2 per row
-            for (let i = 0; i < channelsToDisplay.length; i += 2) {
-                const row = [];
+        // Add channel buttons if there are channels to display
+        if (channelsData.display.length > 0 || channelsData.mustJoin.length > 0) {
+            // Show must join channels first
+            if (channelsData.mustJoin.length > 0) {
+                buttons.push([{ text: '🔒 REQUIRED CHANNELS (Must Join)', callback_data: 'no_action' }]);
                 
-                // First channel
-                const channel1 = channelsToDisplay[i];
-                const buttonText1 = `🔗 ${channel1.buttonLabel || channel1.title}`;
-                row.push({ text: buttonText1, url: channel1.link });
+                const channelsPerRow = config?.displaySettings?.channelsPerRow || 2;
                 
-                // Second channel if exists
-                if (i + 1 < channelsToDisplay.length) {
-                    const channel2 = channelsToDisplay[i + 1];
-                    const buttonText2 = `🔗 ${channel2.buttonLabel || channel2.title}`;
-                    row.push({ text: buttonText2, url: channel2.link });
+                for (let i = 0; i < channelsData.mustJoin.length; i += channelsPerRow) {
+                    const row = [];
+                    
+                    for (let j = 0; j < channelsPerRow && (i + j) < channelsData.mustJoin.length; j++) {
+                        const channel = channelsData.mustJoin[i + j];
+                        const buttonText = channel.buttonLabel || `Join ${channel.title}`;
+                        row.push({ text: buttonText, url: channel.link });
+                    }
+                    
+                    buttons.push(row);
                 }
                 
-                buttons.push(row);
+                buttons.push([]); // Empty row for spacing
+            }
+            
+            // Show other channels
+            if (channelsData.display.length > 0) {
+                if (channelsData.mustJoin.length > 0) {
+                    buttons.push([{ text: '📌 RECOMMENDED CHANNELS', callback_data: 'no_action' }]);
+                }
+                
+                const channelsPerRow = config?.displaySettings?.channelsPerRow || 2;
+                
+                for (let i = 0; i < channelsData.display.length; i += channelsPerRow) {
+                    const row = [];
+                    
+                    for (let j = 0; j < channelsPerRow && (i + j) < channelsData.display.length; j++) {
+                        const channel = channelsData.display[i + j];
+                        const buttonText = channel.buttonLabel || `Join ${channel.title}`;
+                        row.push({ text: buttonText, url: channel.link });
+                    }
+                    
+                    buttons.push(row);
+                }
             }
             
             // Add verify button
-            buttons.push([{ text: '✅ Check Joined', callback_data: 'check_joined' }]);
+            buttons.push([{ text: '✅ Check Joined Status', callback_data: 'check_joined' }]);
         } else {
             // All channels joined - show menu button
-            buttons.push([{ text: '🎮 Go to Menu', callback_data: 'go_to_menu' }]);
+            buttons.push([{ text: '🎮 Go to Earning Dashboard', callback_data: 'go_to_menu' }]);
         }
         
         // Add contact button if enabled
-        if (config?.showContactButton !== false) {
-            buttons.push([{ text: '📞 Contact Admin', callback_data: 'contact_admin' }]);
+        const showContactButton = config?.showContactButton !== false;
+        if (showContactButton) {
+            buttons.push([{ text: '📞 Contact Support', callback_data: 'contact_support' }]);
         }
         
-        // Get the actual image URL
-        startImage = await imagePromise;
-        
+        // Send message with image
         await ctx.replyWithPhoto(startImage, {
             caption: startMessage,
             parse_mode: 'HTML',
@@ -1089,50 +1130,118 @@ async function showStartScreen(ctx) {
         
     } catch (error) {
         console.error('Show start screen error:', error);
-        ctx.session.lastError = {
-            function: 'showStartScreen',
-            error: error.message
-        };
-        
-        await safeSendMessage(ctx, '❌ An error occurred. Please try again.', {
-            reply_markup: {
-                inline_keyboard: [[
-                    { text: '📞 Contact Admin', callback_data: 'contact_admin' },
-                    { text: '🔄 Try Again', callback_data: 'back_to_start' }
-                ]]
-            }
-        });
+        await safeSendMessage(ctx, '❌ An error occurred. Please try again.');
     }
 }
 
-// Check Joined button
+// Check Joined Status
 bot.action('check_joined', async (ctx) => {
     try {
         await ctx.deleteMessage().catch(() => {});
-        
-        const userId = ctx.from.id;
-        const unjoinedChannels = await getUnjoinedChannels(userId);
-        
-        if (unjoinedChannels.length > 0) {
-            await safeSendMessage(ctx, '⚠️ Please join all required channels first!');
-            await showStartScreen(ctx);
-        } else {
-            // Update user status
-            await db.collection('users').updateOne(
-                { userId: userId },
-                { $set: { joinedAll: true } }
-            );
-            
-            await safeSendMessage(ctx, '✅ All channels joined! Taking you to menu...');
-            await showMainMenu(ctx);
-        }
+        await showStartScreen(ctx);
     } catch (error) {
         console.error('Check joined error:', error);
         await ctx.answerCbQuery('❌ Error checking channels');
     }
 });
 
-// Go to Menu button
+// ==========================================
+// MAIN MENU - EARNING DASHBOARD
+// ==========================================
+
+async function showMainMenu(ctx) {
+    try {
+        const user = ctx.from;
+        const userId = user.id;
+        
+        // Check if user has joined all required channels
+        const hasJoined = await hasJoinedAllChannels(userId);
+        if (!hasJoined) {
+            await safeSendMessage(ctx, '⚠️ *Please join all required channels first!*\n\nYou must join all channels marked as "Must Join" to access earning features.', {
+                parse_mode: 'HTML',
+                reply_markup: {
+                    inline_keyboard: [[
+                        { text: '🔙 Back to Start', callback_data: 'back_to_start' }
+                    ]]
+                }
+            });
+            return;
+        }
+        
+        // Update user status
+        await db.collection('users').updateOne(
+            { userId: userId },
+            { $set: { joinedAll: true, updatedAt: new Date() } }
+        );
+        
+        // Get user statistics
+        const [config, userStats] = await Promise.all([
+            db.collection('admin').findOne({ type: 'config' }),
+            getUserStats(userId)
+        ]);
+        
+        if (!userStats) {
+            await safeSendMessage(ctx, '❌ User data not found. Please try /start again.');
+            return;
+        }
+        
+        // Prepare image
+        let menuImage = config?.menuImage || DEFAULT_CONFIG.menuImage;
+        menuImage = await getCloudinaryUrlWithName(menuImage, user.first_name || 'User', null, 'menuImage');
+        
+        // Prepare message with user statistics
+        const userVars = getUserVariables(user);
+        const menuVars = {
+            balance: formatCurrency(userStats.balance),
+            total_referrals: userStats.referrals,
+            tasks_completed: userStats.tasksCompleted,
+            wallet_set: userStats.wallet ? '✅ Set' : '❌ Not set'
+        };
+        
+        let menuMessage = config?.menuMessage || DEFAULT_CONFIG.menuMessage;
+        menuMessage = replaceVariables(menuMessage, userVars);
+        menuMessage = replaceVariables(menuMessage, menuVars);
+        
+        // Create menu buttons
+        const keyboard = [
+            [
+                { text: '💰 Balance', callback_data: 'user_balance' },
+                { text: '👤 Profile', callback_data: 'user_profile' }
+            ],
+            [
+                { text: '💳 Withdraw', callback_data: 'user_withdraw' },
+                { text: '🏦 Set Wallet', callback_data: 'user_set_wallet' }
+            ],
+            [
+                { text: '📤 Refer & Earn', callback_data: 'user_refer' },
+                { text: '👥 My Referrals', callback_data: 'user_referrals' }
+            ],
+            [
+                { text: '🎁 Bonus', callback_data: 'user_bonus' },
+                { text: '🎫 Gift Code', callback_data: 'user_gift_code' }
+            ],
+            [
+                { text: '📋 Tasks', callback_data: 'user_tasks' },
+                { text: '📞 Contact', callback_data: 'contact_support' }
+            ],
+            [
+                { text: '🔙 Back to Start', callback_data: 'back_to_start' }
+            ]
+        ];
+        
+        await ctx.replyWithPhoto(menuImage, {
+            caption: menuMessage,
+            parse_mode: 'HTML',
+            reply_markup: { inline_keyboard: keyboard }
+        });
+        
+    } catch (error) {
+        console.error('Show main menu error:', error);
+        await safeSendMessage(ctx, '❌ An error occurred. Please try again.');
+    }
+}
+
+// Go to Menu
 bot.action('go_to_menu', async (ctx) => {
     try {
         await ctx.deleteMessage().catch(() => {});
@@ -1155,325 +1264,321 @@ bot.action('back_to_start', async (ctx) => {
 });
 
 // ==========================================
-// MAIN MENU - Keyboard Layout
+// USER FEATURES - BALANCE
 // ==========================================
 
-async function showMainMenu(ctx) {
+bot.action('user_balance', async (ctx) => {
     try {
-        const user = ctx.from;
-        const userId = user.id;
+        const userId = ctx.from.id;
+        const user = await db.collection('users').findOne({ userId: userId });
         
-        // First check if user has joined all required channels
-        const unjoinedChannels = await getUnjoinedChannels(userId);
-        if (unjoinedChannels.length > 0) {
-            await db.collection('users').updateOne(
-                { userId: userId },
-                { $set: { joinedAll: false } }
-            );
-            
-            await safeSendMessage(ctx, '⚠️ Please join all required channels first!', {
-                reply_markup: {
-                    inline_keyboard: [[
-                        { text: '🔙 Back to Start', callback_data: 'back_to_start' }
-                    ]]
-                }
-            });
+        if (!user) {
+            await ctx.answerCbQuery('❌ User not found');
             return;
         }
         
-        // Update user status
-        await db.collection('users').updateOne(
-            { userId: userId },
-            { $set: { joinedAll: true, lastActive: new Date() } }
-        );
-        
-        // Get user data
-        const userData = await db.collection('users').findOne({ userId: userId });
-        const config = await db.collection('admin').findOne({ type: 'config' });
-        
-        // Prepare user variables
-        const userVars = getUserVariables(user, {
-            balance: userData?.balance || 0,
-            referralCount: userData?.referralCount || 0,
-            referCode: userData?.referCode || 'N/A'
-        });
-        
-        // Prepare image URL with name
-        let menuImage = config?.menuImage || DEFAULT_CONFIG.menuImage;
-        menuImage = await getCloudinaryUrlWithName(menuImage, userVars.full_name, 'menuImage');
-        
-        // Prepare message
-        let menuMessage = config?.menuMessage || DEFAULT_CONFIG.menuMessage;
-        menuMessage = replaceVariables(menuMessage, userVars);
-        
-        // Send image with caption
-        await ctx.replyWithPhoto(menuImage, {
-            caption: menuMessage,
-            parse_mode: 'HTML'
-        });
-        
-        // Create main keyboard
-        const keyboard = Markup.keyboard([
-            ['💰 Balance', '👤 Profile'],
-            ['📤 Withdraw', '💳 Set Wallet'],
-            ['📢 Refer & Earn', '🎁 Bonus'],
-            ['📋 Tasks', '🎫 Gift Code'],
-            ['📞 Contact Admin', '🔙 Back to Start']
-        ]).resize();
-        
-        await safeSendMessage(ctx, '🎛️ *Main Menu*\n\nSelect an option:', {
-            parse_mode: 'Markdown',
-            reply_markup: keyboard.reply_markup
-        });
-        
-    } catch (error) {
-        console.error('Show main menu error:', error);
-        ctx.session.lastError = {
-            function: 'showMainMenu',
-            error: error.message
-        };
-        
-        await safeSendMessage(ctx, '❌ An error occurred. Please try again.', {
-            reply_markup: {
-                inline_keyboard: [[
-                    { text: '🔙 Back to Start', callback_data: 'back_to_start' },
-                    { text: '📞 Contact Admin', callback_data: 'contact_admin' }
-                ]]
-            }
-        });
-    }
-}
-
-// ==========================================
-// MAIN MENU HANDLERS
-// ==========================================
-
-// Balance
-bot.hears('💰 Balance', async (ctx) => {
-    try {
-        const userId = ctx.from.id;
-        const userData = await db.collection('users').findOne({ userId: userId });
-        const transactions = await getUserTransactions(userId, 15);
+        // Get recent transactions
+        const transactions = await db.collection('transactions')
+            .find({ userId: userId })
+            .sort({ date: -1 })
+            .limit(15)
+            .toArray();
         
         let balanceText = `💰 *Your Balance*\n\n`;
-        balanceText += `🪙 Current Balance: *${userData?.balance || 0} ₹*\n`;
-        balanceText += `📈 Total Earned: *${userData?.totalEarned || 0} ₹*\n`;
-        balanceText += `📤 Total Withdrawn: *${userData?.totalWithdrawn || 0} ₹*\n\n`;
-        balanceText += `📜 *Recent Transactions (Last 15)*\n\n`;
+        balanceText += `🪙 *Available Balance:* ${formatCurrency(user.balance || 0)}\n\n`;
+        balanceText += `📊 *Recent Transactions (Last 15):*\n\n`;
         
         if (transactions.length === 0) {
             balanceText += `No transactions yet.\n`;
         } else {
             transactions.forEach((txn, index) => {
-                const sign = txn.type === 'credit' || txn.type === 'referral' || txn.type === 'bonus' || txn.type === 'task' ? '+' : '-';
-                const emoji = txn.type === 'credit' ? '💳' : 
-                             txn.type === 'referral' ? '👥' : 
-                             txn.type === 'bonus' ? '🎁' : 
-                             txn.type === 'task' ? '✅' : 
-                             txn.type === 'withdrawal' ? '📤' : '💰';
+                const date = new Date(txn.date).toLocaleDateString();
+                const typeEmoji = txn.type === 'deposit' ? '📥' : 
+                                 txn.type === 'withdrawal' ? '📤' : 
+                                 txn.type === 'referral' ? '👥' : 
+                                 txn.type === 'task' ? '✅' : 
+                                 txn.type === 'bonus' ? '🎁' : '🎫';
                 
-                balanceText += `${emoji} ${sign}${txn.amount} ₹ - ${txn.description}\n`;
-                balanceText += `   📅 ${new Date(txn.createdAt).toLocaleDateString()}\n\n`;
+                balanceText += `${index + 1}. ${typeEmoji} *${txn.type.toUpperCase()}*\n`;
+                balanceText += `   Amount: ${formatCurrency(txn.amount)}\n`;
+                balanceText += `   Date: ${date}\n`;
+                if (txn.description) {
+                    balanceText += `   Note: ${txn.description}\n`;
+                }
+                balanceText += `\n`;
             });
         }
         
+        const keyboard = [
+            [{ text: '💳 Withdraw Funds', callback_data: 'user_withdraw' }],
+            [{ text: '📋 View All Transactions', callback_data: 'view_all_transactions' }],
+            [{ text: '🔙 Back to Menu', callback_data: 'back_to_menu' }]
+        ];
+        
+        await ctx.deleteMessage().catch(() => {});
         await safeSendMessage(ctx, balanceText, {
-            parse_mode: 'Markdown',
-            reply_markup: {
-                inline_keyboard: [[
-                    { text: '🔙 Back to Menu', callback_data: 'back_to_menu' }
-                ]]
-            }
+            parse_mode: 'HTML',
+            reply_markup: { inline_keyboard: keyboard }
         });
+        
     } catch (error) {
         console.error('Balance error:', error);
-        await safeSendMessage(ctx, '❌ Error fetching balance.');
+        await ctx.answerCbQuery('❌ Error loading balance');
     }
 });
 
-// Profile
-bot.hears('👤 Profile', async (ctx) => {
+// View All Transactions
+bot.action('view_all_transactions', async (ctx) => {
+    try {
+        const userId = ctx.from.id;
+        const page = ctx.session?.transactionsPage || 1;
+        const limit = 20;
+        
+        const totalTransactions = await db.collection('transactions').countDocuments({ userId: userId });
+        const totalPages = Math.ceil(totalTransactions / limit);
+        const skip = (page - 1) * limit;
+        
+        const transactions = await db.collection('transactions')
+            .find({ userId: userId })
+            .sort({ date: -1 })
+            .skip(skip)
+            .limit(limit)
+            .toArray();
+        
+        let transactionsText = `📊 *All Transactions*\n\n`;
+        transactionsText += `Page ${page} of ${totalPages}\n\n`;
+        
+        if (transactions.length === 0) {
+            transactionsText += `No transactions found.\n`;
+        } else {
+            transactions.forEach((txn, index) => {
+                const date = new Date(txn.date).toLocaleString();
+                const typeEmoji = txn.type === 'deposit' ? '📥' : 
+                                 txn.type === 'withdrawal' ? '📤' : 
+                                 txn.type === 'referral' ? '👥' : 
+                                 txn.type === 'task' ? '✅' : 
+                                 txn.type === 'bonus' ? '🎁' : '🎫';
+                
+                transactionsText += `${skip + index + 1}. ${typeEmoji} *${txn.type.toUpperCase()}*\n`;
+                transactionsText += `   Amount: ${formatCurrency(txn.amount)}\n`;
+                transactionsText += `   Date: ${date}\n`;
+                if (txn.description) {
+                    transactionsText += `   Note: ${txn.description}\n`;
+                }
+                transactionsText += `\n`;
+            });
+        }
+        
+        const keyboard = [];
+        
+        // Navigation buttons
+        if (totalPages > 1) {
+            const navRow = [];
+            if (page > 1) {
+                navRow.push({ text: '◀️ Previous', callback_data: `transactions_page_${page - 1}` });
+            }
+            navRow.push({ text: `📄 ${page}/${totalPages}`, callback_data: 'no_action' });
+            if (page < totalPages) {
+                navRow.push({ text: 'Next ▶️', callback_data: `transactions_page_${page + 1}` });
+            }
+            keyboard.push(navRow);
+        }
+        
+        keyboard.push(
+            [{ text: '💰 Back to Balance', callback_data: 'user_balance' }],
+            [{ text: '🔙 Back to Menu', callback_data: 'back_to_menu' }]
+        );
+        
+        await safeEditMessage(ctx, transactionsText, {
+            parse_mode: 'HTML',
+            reply_markup: { inline_keyboard: keyboard }
+        });
+        
+    } catch (error) {
+        console.error('View transactions error:', error);
+        await ctx.answerCbQuery('❌ Error loading transactions');
+    }
+});
+
+// Transactions pagination
+bot.action(/^transactions_page_(\d+)$/, async (ctx) => {
+    try {
+        const page = parseInt(ctx.match[1]);
+        ctx.session.transactionsPage = page;
+        await bot.action('view_all_transactions')(ctx);
+    } catch (error) {
+        console.error('Transactions pagination error:', error);
+    }
+});
+
+// ==========================================
+// USER FEATURES - PROFILE
+// ==========================================
+
+bot.action('user_profile', async (ctx) => {
     try {
         const user = ctx.from;
         const userId = user.id;
-        const userData = await db.collection('users').findOne({ userId: userId });
-        const config = await db.collection('admin').findOne({ type: 'config' });
         
-        // Prepare profile image
-        let profileImage = config?.startImage || DEFAULT_CONFIG.startImage;
-        profileImage = await getCloudinaryUrlWithName(profileImage, user.first_name || 'User', 'startImage');
+        const [userData, userStats] = await Promise.all([
+            db.collection('users').findOne({ userId: userId }),
+            getUserStats(userId)
+        ]);
         
-        // Create profile text
+        if (!userData || !userStats) {
+            await ctx.answerCbQuery('❌ User data not found');
+            return;
+        }
+        
+        // Create profile image URL
+        const firstName = user.first_name || '';
+        const lastName = user.last_name || '';
+        const fullName = [firstName, lastName].filter(Boolean).join(' ');
+        const username = user.username ? `@${user.username}` : 'No username';
+        
+        // Generate profile text
         let profileText = `👤 *User Profile*\n\n`;
-        profileText += `🆔 User ID: \`${userId}\`\n`;
-        profileText += `👤 Name: ${user.first_name || ''} ${user.last_name || ''}\n`;
-        profileText += `📧 Username: ${user.username ? '@' + user.username : 'Not set'}\n`;
-        profileText += `💰 Balance: ${userData?.balance || 0} ₹\n`;
-        profileText += `📊 Referrals: ${userData?.referralCount || 0}\n`;
-        profileText += `🎫 Refer Code: \`${userData?.referCode || 'N/A'}\`\n`;
-        profileText += `🔗 Refer Link: https://t.me/${ctx.botInfo.username}?start=${userData?.referCode || ''}\n`;
-        profileText += `📅 Joined: ${userData?.joinedAt ? new Date(userData.joinedAt).toLocaleDateString() : 'Recently'}\n`;
+        profileText += `🆔 *User ID:* \`${userId}\`\n`;
+        profileText += `👤 *Name:* ${fullName || 'Not set'}\n`;
+        profileText += `📱 *Username:* ${username}\n`;
+        profileText += `💰 *Balance:* ${formatCurrency(userStats.balance)}\n`;
+        profileText += `👥 *Total Referrals:* ${userStats.referrals}\n`;
+        profileText += `✅ *Tasks Completed:* ${userStats.tasksCompleted}\n`;
+        profileText += `🏦 *Wallet:* ${userStats.wallet || 'Not set'}\n`;
+        profileText += `🎫 *Referral Code:* \`${userData.referCode || 'Not set'}\`\n`;
+        profileText += `📅 *Joined:* ${new Date(userStats.joinedAt).toLocaleDateString()}\n`;
+        profileText += `🕒 *Last Active:* ${new Date(userData.lastActive).toLocaleString()}\n`;
         
-        await ctx.replyWithPhoto(profileImage, {
-            caption: profileText,
-            parse_mode: 'Markdown',
-            reply_markup: {
-                inline_keyboard: [[
-                    { text: '📢 Share Refer Link', switch_inline_query: `Join using my refer code: ${userData?.referCode || ''}` }
-                ], [
-                    { text: '🔙 Back to Menu', callback_data: 'back_to_menu' }
-                ]]
+        // Try to send profile photo if available
+        try {
+            const userProfile = await ctx.telegram.getUserProfilePhotos(userId, 0, 1);
+            
+            if (userProfile && userProfile.photos.length > 0) {
+                const photo = userProfile.photos[0][0];
+                const fileLink = await ctx.telegram.getFileLink(photo.file_id);
+                
+                await ctx.replyWithPhoto(fileLink.href, {
+                    caption: profileText,
+                    parse_mode: 'HTML',
+                    reply_markup: {
+                        inline_keyboard: [
+                            [{ text: '📤 Share Referral', callback_data: 'user_refer' }],
+                            [{ text: '🏦 Set/Edit Wallet', callback_data: 'user_set_wallet' }],
+                            [{ text: '🔙 Back to Menu', callback_data: 'back_to_menu' }]
+                        ]
+                    }
+                });
+            } else {
+                // Use default image
+                const defaultImage = 'https://res.cloudinary.com/dneusgyzc/image/upload/v1763670359/1000106281_cfg1ke.jpg';
+                const profileImage = await getCloudinaryUrlWithName(defaultImage, fullName || 'User', null, 'menuImage');
+                
+                await ctx.replyWithPhoto(profileImage, {
+                    caption: profileText,
+                    parse_mode: 'HTML',
+                    reply_markup: {
+                        inline_keyboard: [
+                            [{ text: '📤 Share Referral', callback_data: 'user_refer' }],
+                            [{ text: '🏦 Set/Edit Wallet', callback_data: 'user_set_wallet' }],
+                            [{ text: '🔙 Back to Menu', callback_data: 'back_to_menu' }]
+                        ]
+                    }
+                });
             }
-        });
+        } catch (photoError) {
+            // If can't get photo, send text only
+            await ctx.deleteMessage().catch(() => {});
+            await safeSendMessage(ctx, profileText, {
+                parse_mode: 'HTML',
+                reply_markup: {
+                    inline_keyboard: [
+                        [{ text: '📤 Share Referral', callback_data: 'user_refer' }],
+                        [{ text: '🏦 Set/Edit Wallet', callback_data: 'user_set_wallet' }],
+                        [{ text: '🔙 Back to Menu', callback_data: 'back_to_menu' }]
+                    ]
+                }
+            });
+        }
+        
     } catch (error) {
         console.error('Profile error:', error);
-        await safeSendMessage(ctx, '❌ Error loading profile.');
+        await ctx.answerCbQuery('❌ Error loading profile');
     }
 });
 
-// Withdraw
-bot.hears('📤 Withdraw', async (ctx) => {
-    try {
-        const userId = ctx.from.id;
-        const userData = await db.collection('users').findOne({ userId: userId });
-        const config = await db.collection('admin').findOne({ type: 'config' });
-        
-        // Check if withdrawals are enabled
-        if (config?.withdrawalsEnabled === false) {
-            await safeSendMessage(ctx, '⚠️ Withdrawals are currently disabled. Please check back later.', {
-                reply_markup: {
-                    inline_keyboard: [[
-                        { text: '🔙 Back to Menu', callback_data: 'back_to_menu' }
-                    ]]
-                }
-            });
-            return;
-        }
-        
-        // Check wallet
-        if (!userData?.wallet) {
-            await safeSendMessage(ctx, '💳 Please set your wallet UPI ID first!', {
-                reply_markup: {
-                    inline_keyboard: [[
-                        { text: '💳 Set Wallet', callback_data: 'set_wallet' },
-                        { text: '🔙 Back to Menu', callback_data: 'back_to_menu' }
-                    ]]
-                }
-            });
-            return;
-        }
-        
-        // Check balance
-        const balance = userData.balance || 0;
-        const minWithdrawal = config?.minWithdrawal || DEFAULT_CONFIG.minWithdrawal;
-        
-        if (balance < minWithdrawal) {
-            await safeSendMessage(ctx, `❌ Minimum withdrawal amount is ${minWithdrawal} ₹\n\nYour balance: ${balance} ₹`, {
-                reply_markup: {
-                    inline_keyboard: [[
-                        { text: '🔙 Back to Menu', callback_data: 'back_to_menu' }
-                    ]]
-                }
-            });
-            return;
-        }
-        
-        const maxWithdrawal = config?.maxWithdrawal || DEFAULT_CONFIG.maxWithdrawal;
-        
-        await safeSendMessage(ctx, `📤 *Withdraw Funds*\n\n💰 Your Balance: *${balance} ₹*\n💳 Your UPI: \`${userData.wallet}\`\n\n📝 Minimum: *${minWithdrawal} ₹*\n📝 Maximum: *${maxWithdrawal} ₹*\n\nEnter the amount you want to withdraw:\n\nType "cancel" to cancel.`, {
-            parse_mode: 'Markdown'
-        });
-        
-        // Enter withdrawal scene
-        await ctx.scene.enter('withdraw_amount_scene');
-        
-    } catch (error) {
-        console.error('Withdraw error:', error);
-        await safeSendMessage(ctx, '❌ Error processing withdrawal.');
-    }
-});
+// ==========================================
+// USER FEATURES - SET WALLET
+// ==========================================
 
-// Set Wallet
-bot.hears('💳 Set Wallet', async (ctx) => {
+bot.action('user_set_wallet', async (ctx) => {
     try {
-        const userId = ctx.from.id;
-        const userData = await db.collection('users').findOne({ userId: userId });
+        const user = ctx.from;
+        const userId = user.id;
         
+        const userData = await db.collection('users').findOne({ userId: userId });
         const currentWallet = userData?.wallet || 'Not set';
         
-        await safeSendMessage(ctx, `💳 *Set Your Wallet*\n\nCurrent UPI ID: \`${currentWallet}\`\n\nPlease send your UPI ID (e.g., username@upi):\n\nType "cancel" to cancel.`, {
-            parse_mode: 'Markdown',
+        const walletText = `🏦 *Set Your Wallet*\n\n`;
+        walletText += `*Current Wallet:* \`${currentWallet}\`\n\n`;
+        walletText += `Please send your UPI ID or Wallet address:\n\n`;
+        walletText += `*Examples:*\n`;
+        walletText += `• \`user@upi\`\n`;
+        walletText += `• \`user@oksbi\`\n`;
+        walletText += `• \`user@paytm\`\n\n`;
+        walletText += `*Note:* This will be used for all withdrawals.\n`;
+        walletText += `Type "cancel" to cancel.`;
+        
+        await safeSendMessage(ctx, walletText, {
+            parse_mode: 'HTML',
             reply_markup: {
                 inline_keyboard: [[
-                    { text: '❌ Remove Wallet', callback_data: 'remove_wallet' },
                     { text: '🔙 Back to Menu', callback_data: 'back_to_menu' }
                 ]]
             }
         });
         
-        // Enter set wallet scene
+        // Enter wallet setting scene
         await ctx.scene.enter('set_wallet_scene');
         
     } catch (error) {
         console.error('Set wallet error:', error);
-        await safeSendMessage(ctx, '❌ Error setting wallet.');
-    }
-});
-
-// Remove Wallet callback
-bot.action('remove_wallet', async (ctx) => {
-    try {
-        const userId = ctx.from.id;
-        
-        await db.collection('users').updateOne(
-            { userId: userId },
-            { $set: { wallet: '' } }
-        );
-        
-        await ctx.answerCbQuery('✅ Wallet removed successfully!');
-        await safeSendMessage(ctx, '✅ Wallet removed successfully!', {
-            reply_markup: {
-                inline_keyboard: [[
-                    { text: '💳 Set New Wallet', callback_data: 'set_wallet' },
-                    { text: '🔙 Back to Menu', callback_data: 'back_to_menu' }
-                ]]
-            }
-        });
-    } catch (error) {
-        console.error('Remove wallet error:', error);
-        await ctx.answerCbQuery('❌ Error removing wallet');
+        await ctx.answerCbQuery('❌ Error setting wallet');
     }
 });
 
 // Set Wallet Scene
 scenes.setWallet.on('text', async (ctx) => {
     try {
-        if (ctx.message.text.toLowerCase() === 'cancel') {
-            await safeSendMessage(ctx, '❌ Wallet update cancelled.');
+        const userId = ctx.from.id;
+        const walletInput = ctx.message.text.trim();
+        
+        if (walletInput.toLowerCase() === 'cancel') {
+            await safeSendMessage(ctx, '❌ Wallet setup cancelled.');
             await ctx.scene.leave();
             await showMainMenu(ctx);
             return;
         }
         
-        const upiId = ctx.message.text.trim();
-        
-        // Basic UPI validation
-        if (!upiId.includes('@')) {
-            await safeSendMessage(ctx, '❌ Invalid UPI ID format. Please use format: username@upi\n\nTry again:');
+        // Validate UPI ID format
+        const upiRegex = /^[a-zA-Z0-9.\-_]{2,256}@[a-zA-Z]{2,64}$/;
+        if (!upiRegex.test(walletInput)) {
+            await safeSendMessage(ctx, '❌ *Invalid UPI ID format!*\n\nPlease enter a valid UPI ID like:\n\`user@upi\`\n\`user@oksbi\`\n\`user@paytm\`\n\nType "cancel" to cancel.', {
+                parse_mode: 'HTML'
+            });
             return;
         }
         
-        const userId = ctx.from.id;
-        
+        // Update wallet in database
         await db.collection('users').updateOne(
             { userId: userId },
-            { $set: { wallet: upiId } }
+            { $set: { wallet: walletInput, updatedAt: new Date() } }
         );
         
-        await safeSendMessage(ctx, `✅ Wallet UPI ID set to: \`${upiId}\``, {
-            parse_mode: 'Markdown',
+        await safeSendMessage(ctx, `✅ *Wallet Updated Successfully!*\n\nYour wallet has been set to:\n\`${walletInput}\`\n\nYou can now withdraw your earnings.`, {
+            parse_mode: 'HTML',
             reply_markup: {
                 inline_keyboard: [[
+                    { text: '💳 Withdraw Funds', callback_data: 'user_withdraw' },
                     { text: '🔙 Back to Menu', callback_data: 'back_to_menu' }
                 ]]
             }
@@ -1483,89 +1588,78 @@ scenes.setWallet.on('text', async (ctx) => {
         
     } catch (error) {
         console.error('Set wallet scene error:', error);
-        await safeSendMessage(ctx, '❌ Error setting wallet.');
+        await safeSendMessage(ctx, '❌ Error updating wallet. Please try again.');
         await ctx.scene.leave();
     }
 });
 
-// Withdraw Amount Scene
-scenes.withdrawAmount.on('text', async (ctx) => {
+// ==========================================
+// USER FEATURES - WITHDRAW
+// ==========================================
+
+bot.action('user_withdraw', async (ctx) => {
     try {
-        if (ctx.message.text.toLowerCase() === 'cancel') {
-            await safeSendMessage(ctx, '❌ Withdrawal cancelled.');
-            await ctx.scene.leave();
-            await showMainMenu(ctx);
-            return;
-        }
-        
-        const amount = parseFloat(ctx.message.text);
         const userId = ctx.from.id;
-        const userData = await db.collection('users').findOne({ userId: userId });
-        const config = await db.collection('admin').findOne({ type: 'config' });
         
-        if (isNaN(amount) || amount <= 0) {
-            await safeSendMessage(ctx, '❌ Please enter a valid amount.');
+        const [userData, config] = await Promise.all([
+            db.collection('users').findOne({ userId: userId }),
+            db.collection('admin').findOne({ type: 'config' })
+        ]);
+        
+        if (!userData) {
+            await ctx.answerCbQuery('❌ User not found');
             return;
         }
         
-        const balance = userData.balance || 0;
-        const minWithdrawal = config?.minWithdrawal || DEFAULT_CONFIG.minWithdrawal;
-        const maxWithdrawal = config?.maxWithdrawal || DEFAULT_CONFIG.maxWithdrawal;
+        const withdrawalSettings = config?.withdrawalSettings || DEFAULT_CONFIG.withdrawal;
+        const minAmount = withdrawalSettings.minAmount || 100;
+        const maxAmount = withdrawalSettings.maxAmount || 5000;
+        const processingFee = withdrawalSettings.processingFee || 2;
         
-        if (amount < minWithdrawal) {
-            await safeSendMessage(ctx, `❌ Minimum withdrawal amount is ${minWithdrawal} ₹`);
+        // Check if wallet is set
+        if (!userData.wallet) {
+            await safeSendMessage(ctx, `❌ *Wallet Not Set!*\n\nPlease set your wallet address first to withdraw funds.\n\nMin withdrawal: ${formatCurrency(minAmount)}`, {
+                parse_mode: 'HTML',
+                reply_markup: {
+                    inline_keyboard: [
+                        [{ text: '🏦 Set Wallet Now', callback_data: 'user_set_wallet' }],
+                        [{ text: '🔙 Back to Menu', callback_data: 'back_to_menu' }]
+                    ]
+                }
+            });
             return;
         }
         
-        if (amount > maxWithdrawal) {
-            await safeSendMessage(ctx, `❌ Maximum withdrawal amount is ${maxWithdrawal} ₹`);
+        // Check if user has enough balance
+        const userBalance = userData.balance || 0;
+        if (userBalance < minAmount) {
+            await safeSendMessage(ctx, `❌ *Insufficient Balance!*\n\nYour balance: ${formatCurrency(userBalance)}\nMin withdrawal: ${formatCurrency(minAmount)}\n\nComplete more tasks or referrals to earn more!`, {
+                parse_mode: 'HTML',
+                reply_markup: {
+                    inline_keyboard: [
+                        [{ text: '📋 View Tasks', callback_data: 'user_tasks' }],
+                        [{ text: '📤 Refer & Earn', callback_data: 'user_refer' }],
+                        [{ text: '🔙 Back to Menu', callback_data: 'back_to_menu' }]
+                    ]
+                }
+            });
             return;
         }
         
-        if (amount > balance) {
-            await safeSendMessage(ctx, `❌ Insufficient balance. Your balance: ${balance} ₹`);
-            return;
-        }
+        const withdrawText = `💳 *Withdraw Funds*\n\n`;
+        withdrawText += `💰 *Available Balance:* ${formatCurrency(userBalance)}\n`;
+        withdrawText += `🏦 *Wallet:* \`${userData.wallet}\`\n\n`;
+        withdrawText += `*Withdrawal Limits:*\n`;
+        withdrawText += `• Minimum: ${formatCurrency(minAmount)}\n`;
+        withdrawText += `• Maximum: ${formatCurrency(maxAmount)}\n`;
+        withdrawText += `• Processing Fee: ${processingFee}%\n\n`;
+        withdrawText += `*Example:* If you withdraw ${formatCurrency(100)}, you'll receive ${formatCurrency(100 * (1 - processingFee/100))}\n\n`;
+        withdrawText += `Enter the amount you want to withdraw (${formatCurrency(minAmount)} - ${formatCurrency(maxAmount)}):\n`;
+        withdrawText += `Type "cancel" to cancel.`;
         
-        // Create withdrawal request
-        const withdrawal = {
-            userId: userId,
-            amount: amount,
-            upiId: userData.wallet,
-            status: 'pending',
-            txnId: generateTxnId(),
-            createdAt: new Date(),
-            userInfo: {
-                firstName: userData.firstName,
-                lastName: userData.lastName,
-                username: userData.username
-            }
-        };
-        
-        await db.collection('withdrawals').insertOne(withdrawal);
-        
-        // Deduct from balance
-        await addTransaction(userId, amount, 'withdrawal', `Withdrawal request #${withdrawal.txnId}`);
-        
-        // Update total withdrawn
-        await db.collection('users').updateOne(
-            { userId: userId },
-            { $inc: { totalWithdrawn: amount } }
-        );
-        
-        // Notify admins
-        const userLink = userData.username ? `@${userData.username}` : userData.firstName || `User ${userId}`;
-        await notifyAdmin(`📤 <b>New Withdrawal Request</b>\n\n👤 User: ${userLink}\n🆔 User ID: <code>${userId}</code>\n💰 Amount: ${amount} ₹\n💳 UPI: <code>${userData.wallet}</code>\n📝 Txn ID: <code>${withdrawal.txnId}</code>\n\n<pre>Click below to process:</pre>`, {
-            reply_markup: {
-                inline_keyboard: [[
-                    { text: '✅ Approve', callback_data: `approve_withdrawal_${withdrawal.txnId}` },
-                    { text: '❌ Reject', callback_data: `reject_withdrawal_${withdrawal.txnId}` }
-                ]]
-            }
-        });
-        
-        await safeSendMessage(ctx, `✅ Withdrawal request submitted!\n\n📝 Txn ID: \`${withdrawal.txnId}\`\n💰 Amount: ${amount} ₹\n💳 UPI: \`${userData.wallet}\`\n\n⏳ Status: *Pending approval*\n\nYou will be notified once processed.`, {
-            parse_mode: 'Markdown',
+        await ctx.deleteMessage().catch(() => {});
+        await safeSendMessage(ctx, withdrawText, {
+            parse_mode: 'HTML',
             reply_markup: {
                 inline_keyboard: [[
                     { text: '🔙 Back to Menu', callback_data: 'back_to_menu' }
@@ -1573,130 +1667,397 @@ scenes.withdrawAmount.on('text', async (ctx) => {
             }
         });
         
-        await ctx.scene.leave();
+        // Store withdrawal info in session
+        ctx.session.withdrawalInfo = {
+            userId: userId,
+            wallet: userData.wallet,
+            minAmount: minAmount,
+            maxAmount: maxAmount,
+            processingFee: processingFee
+        };
+        
+        await ctx.scene.enter('withdraw_amount_scene');
         
     } catch (error) {
-        console.error('Withdraw amount scene error:', error);
-        await safeSendMessage(ctx, '❌ Error processing withdrawal.');
-        await ctx.scene.leave();
+        console.error('Withdraw error:', error);
+        await ctx.answerCbQuery('❌ Error processing withdrawal');
     }
 });
 
-// Refer & Earn
-bot.hears('📢 Refer & Earn', async (ctx) => {
+// Withdraw Amount Scene
+scenes.withdrawAmount.on('text', async (ctx) => {
     try {
         const userId = ctx.from.id;
+        const withdrawalInfo = ctx.session.withdrawalInfo;
+        
+        if (!withdrawalInfo) {
+            await safeSendMessage(ctx, '❌ Session expired. Please try again.');
+            await ctx.scene.leave();
+            return;
+        }
+        
+        const amountInput = ctx.message.text.trim();
+        
+        if (amountInput.toLowerCase() === 'cancel') {
+            await safeSendMessage(ctx, '❌ Withdrawal cancelled.');
+            delete ctx.session.withdrawalInfo;
+            await ctx.scene.leave();
+            await showMainMenu(ctx);
+            return;
+        }
+        
+        // Validate amount
+        const amount = parseFloat(amountInput);
+        if (isNaN(amount) || amount <= 0) {
+            await safeSendMessage(ctx, '❌ *Invalid amount!*\n\nPlease enter a valid number.\nExample: 100, 500, 1000\n\nType "cancel" to cancel.', {
+                parse_mode: 'HTML'
+            });
+            return;
+        }
+        
+        if (amount < withdrawalInfo.minAmount) {
+            await safeSendMessage(ctx, `❌ *Amount too low!*\n\nMinimum withdrawal amount is ${formatCurrency(withdrawalInfo.minAmount)}.\n\nType "cancel" to cancel.`, {
+                parse_mode: 'HTML'
+            });
+            return;
+        }
+        
+        if (amount > withdrawalInfo.maxAmount) {
+            await safeSendMessage(ctx, `❌ *Amount too high!*\n\nMaximum withdrawal amount is ${formatCurrency(withdrawalInfo.maxAmount)}.\n\nType "cancel" to cancel.`, {
+                parse_mode: 'HTML'
+            });
+            return;
+        }
+        
+        // Check user balance
         const userData = await db.collection('users').findOne({ userId: userId });
-        const config = await db.collection('admin').findOne({ type: 'config' });
+        const userBalance = userData.balance || 0;
         
-        const referBonus = config?.referBonus || DEFAULT_CONFIG.referBonus;
-        const referLink = `https://t.me/${ctx.botInfo.username}?start=${userData?.referCode}`;
+        if (amount > userBalance) {
+            await safeSendMessage(ctx, `❌ *Insufficient balance!*\n\nYour balance: ${formatCurrency(userBalance)}\nRequested: ${formatCurrency(amount)}\n\nType "cancel" to cancel.`, {
+                parse_mode: 'HTML'
+            });
+            return;
+        }
         
-        let referText = `📢 *Refer & Earn*\n\n`;
-        referText += `🎫 Your Refer Code: \`${userData?.referCode || 'N/A'}\`\n`;
-        referText += `🔗 Your Refer Link:\n\`${referLink}\`\n\n`;
-        referText += `💰 *Earn ${referBonus} ₹ for each successful referral!*\n\n`;
-        referText += `📊 *How it works:*\n`;
-        referText += `1. Share your refer link with friends\n`;
-        referText += `2. They join using your link\n`;
-        referText += `3. They complete channel verification\n`;
-        referText += `4. You get ${referBonus} ₹ instantly!\n\n`;
-        referText += `📈 Your Referrals: *${userData?.referralCount || 0}*\n`;
-        referText += `💰 Earned from referrals: *${userData?.totalEarned || 0} ₹*\n`;
+        // Calculate net amount after fee
+        const processingFee = withdrawalInfo.processingFee || 2;
+        const feeAmount = (amount * processingFee) / 100;
+        const netAmount = amount - feeAmount;
         
-        await safeSendMessage(ctx, referText, {
-            parse_mode: 'Markdown',
+        // Create withdrawal request
+        const requestId = generateWithdrawalId();
+        const withdrawalRequest = {
+            requestId: requestId,
+            userId: userId,
+            amount: amount,
+            fee: feeAmount,
+            netAmount: netAmount,
+            wallet: withdrawalInfo.wallet,
+            status: 'pending',
+            createdAt: new Date(),
+            userInfo: {
+                firstName: ctx.from.first_name || '',
+                lastName: ctx.from.last_name || '',
+                username: ctx.from.username || ''
+            }
+        };
+        
+        await db.collection('withdrawals').insertOne(withdrawalRequest);
+        
+        // Deduct amount from user balance
+        await updateUserBalance(userId, amount, 'subtract');
+        
+        // Add transaction record
+        await addTransaction(userId, 'withdrawal', -amount, `Withdrawal request #${requestId}`);
+        
+        // Prepare confirmation message
+        const confirmText = `✅ *Withdrawal Request Submitted!*\n\n`;
+        confirmText += `📋 *Request ID:* \`${requestId}\`\n`;
+        confirmText += `💳 *Amount:* ${formatCurrency(amount)}\n`;
+        confirmText += `💰 *Processing Fee:* ${formatCurrency(feeAmount)} (${processingFee}%)\n`;
+        confirmText += `💸 *You Receive:* ${formatCurrency(netAmount)}\n`;
+        confirmText += `🏦 *Wallet:* \`${withdrawalInfo.wallet}\`\n`;
+        confirmText += `📅 *Date:* ${new Date().toLocaleString()}\n\n`;
+        confirmText += `*Status:* ⏳ Pending Approval\n\n`;
+        confirmText += `Your request has been sent to admin for approval.\n`;
+        confirmText += `You will be notified once it's processed.`;
+        
+        await safeSendMessage(ctx, confirmText, {
+            parse_mode: 'HTML',
             reply_markup: {
                 inline_keyboard: [
-                    [{ text: '📢 Share Refer Link', switch_inline_query: `Join using my refer code: ${userData?.referCode || ''}` }],
-                    [{ text: '👥 View All Referrals', callback_data: 'view_referrals_1' }],
+                    [{ text: '📋 View Withdrawal Status', callback_data: 'view_withdrawal_status' }],
                     [{ text: '🔙 Back to Menu', callback_data: 'back_to_menu' }]
                 ]
             }
         });
+        
+        // Notify admins
+        const userLink = ctx.from.username ? `@${ctx.from.username}` : ctx.from.first_name || 'User';
+        const adminNotification = `💳 *New Withdrawal Request*\n\n`;
+        adminNotification += `📋 *Request ID:* \`${requestId}\`\n`;
+        adminNotification += `👤 *User:* ${userLink}\n`;
+        adminNotification += `🆔 *User ID:* \`${userId}\`\n`;
+        adminNotification += `💳 *Amount:* ${formatCurrency(amount)}\n`;
+        adminNotification += `💰 *Net Amount:* ${formatCurrency(netAmount)}\n`;
+        adminNotification += `🏦 *Wallet:* \`${withdrawalInfo.wallet}\`\n`;
+        adminNotification += `📅 *Time:* ${new Date().toLocaleString()}\n\n`;
+        adminNotification += `Click below to process:`;
+        
+        const activeAdmins = await getActiveAdmins();
+        const notifyPromises = activeAdmins.map(async (adminId) => {
+            try {
+                await bot.telegram.sendMessage(adminId, adminNotification, {
+                    parse_mode: 'HTML',
+                    reply_markup: {
+                        inline_keyboard: [[
+                            { text: '✅ Process Request', callback_data: `process_withdrawal_${requestId}` }
+                        ]]
+                    }
+                });
+            } catch (error) {
+                console.error(`Failed to notify admin ${adminId}:`, error.message);
+            }
+        });
+        
+        await Promise.allSettled(notifyPromises);
+        
+        // Clear session
+        delete ctx.session.withdrawalInfo;
+        await ctx.scene.leave();
+        
     } catch (error) {
-        console.error('Refer & earn error:', error);
-        await safeSendMessage(ctx, '❌ Error loading refer section.');
+        console.error('Withdraw amount scene error:', error);
+        await safeSendMessage(ctx, '❌ Error processing withdrawal request. Please try again.');
+        await ctx.scene.leave();
     }
 });
 
-// View Referrals
-bot.action(/^view_referrals_(\d+)$/, async (ctx) => {
+// View Withdrawal Status
+bot.action('view_withdrawal_status', async (ctx) => {
     try {
-        const page = parseInt(ctx.match[1]);
         const userId = ctx.from.id;
         
-        const referralsData = await getUserReferrals(userId, page, 20);
-        const referrals = referralsData.referrals;
+        const withdrawals = await db.collection('withdrawals')
+            .find({ userId: userId })
+            .sort({ createdAt: -1 })
+            .limit(10)
+            .toArray();
         
-        let referralsText = `👥 *Your Referrals (Page ${page}/${referralsData.totalPages})*\n\n`;
-        referralsText += `📊 Total Referrals: *${referralsData.totalReferrals}*\n\n`;
+        let statusText = `📋 *Withdrawal Status*\n\n`;
+        
+        if (withdrawals.length === 0) {
+            statusText += `No withdrawal requests found.\n`;
+        } else {
+            withdrawals.forEach((withdrawal, index) => {
+                const date = new Date(withdrawal.createdAt).toLocaleString();
+                const statusEmoji = withdrawal.status === 'approved' ? '✅' : 
+                                   withdrawal.status === 'rejected' ? '❌' : '⏳';
+                
+                statusText += `${index + 1}. *${withdrawal.requestId}*\n`;
+                statusText += `   Amount: ${formatCurrency(withdrawal.amount)}\n`;
+                statusText += `   Status: ${statusEmoji} ${withdrawal.status}\n`;
+                statusText += `   Date: ${date}\n`;
+                
+                if (withdrawal.status === 'approved' && withdrawal.utr) {
+                    statusText += `   UTR: \`${withdrawal.utr}\`\n`;
+                }
+                if (withdrawal.status === 'rejected' && withdrawal.adminMessage) {
+                    statusText += `   Reason: ${withdrawal.adminMessage}\n`;
+                }
+                statusText += `\n`;
+            });
+        }
+        
+        const keyboard = [
+            [{ text: '💳 New Withdrawal', callback_data: 'user_withdraw' }],
+            [{ text: '🔙 Back to Menu', callback_data: 'back_to_menu' }]
+        ];
+        
+        await safeEditMessage(ctx, statusText, {
+            parse_mode: 'HTML',
+            reply_markup: { inline_keyboard: keyboard }
+        });
+        
+    } catch (error) {
+        console.error('View withdrawal status error:', error);
+        await ctx.answerCbQuery('❌ Error loading withdrawal status');
+    }
+});
+
+// ==========================================
+// USER FEATURES - REFER & EARN
+// ==========================================
+
+bot.action('user_refer', async (ctx) => {
+    try {
+        const userId = ctx.from.id;
+        const user = await db.collection('users').findOne({ userId: userId });
+        
+        if (!user) {
+            await ctx.answerCbQuery('❌ User not found');
+            return;
+        }
+        
+        const config = await db.collection('admin').findOne({ type: 'config' });
+        const referralSettings = config?.referralSettings || DEFAULT_CONFIG.referral;
+        
+        const referCode = user.referCode;
+        const referLink = `https://t.me/${ctx.botInfo.username}?start=${referCode}`;
+        const referBonus = referralSettings.referBonus || 50;
+        
+        let referText = `📤 *Refer & Earn*\n\n`;
+        referText += `🎫 *Your Referral Code:*\n\`${referCode}\`\n\n`;
+        referText += `🔗 *Your Referral Link:*\n\`${referLink}\`\n\n`;
+        referText += `💰 *Earn ${formatCurrency(referBonus)} for each successful referral!*\n\n`;
+        referText += `*How it works:*\n`;
+        referText += `1. Share your referral link/code with friends\n`;
+        referText += `2. When they join using your link\n`;
+        referText += `3. You get ${formatCurrency(referBonus)} instantly!\n`;
+        referText += `4. They also get welcome bonus\n\n`;
+        referText += `*Requirements:*\n`;
+        referText += `• Referred user must join all channels\n`;
+        referText += `• Minimum ${referralSettings.minWithdrawRefer || 2} referrals to withdraw referral earnings\n`;
+        
+        const keyboard = [
+            [
+                { text: '📤 Share Link', url: `https://t.me/share/url?url=${encodeURIComponent(referLink)}&text=${encodeURIComponent(`Join this amazing earning bot and start making money! Use my referral code: ${referCode}`)}` },
+                { text: '📋 Copy Code', callback_data: `copy_refer_code_${referCode}` }
+            ],
+            [
+                { text: '👥 My Referrals', callback_data: 'user_referrals' }
+            ],
+            [
+                { text: '🔙 Back to Menu', callback_data: 'back_to_menu' }
+            ]
+        ];
+        
+        await ctx.deleteMessage().catch(() => {});
+        await safeSendMessage(ctx, referText, {
+            parse_mode: 'HTML',
+            reply_markup: { inline_keyboard: keyboard }
+        });
+        
+    } catch (error) {
+        console.error('Refer error:', error);
+        await ctx.answerCbQuery('❌ Error loading referral info');
+    }
+});
+
+// Copy Referral Code
+bot.action(/^copy_refer_code_(.+)$/, async (ctx) => {
+    try {
+        const referCode = ctx.match[1];
+        await ctx.answerCbQuery(`Referral code copied: ${referCode}`);
+    } catch (error) {
+        console.error('Copy refer code error:', error);
+    }
+});
+
+// My Referrals
+bot.action('user_referrals', async (ctx) => {
+    try {
+        const userId = ctx.from.id;
+        const page = ctx.session?.referralsPage || 1;
+        const limit = 20;
+        
+        const referrals = await db.collection('users')
+            .find({ referredBy: userId })
+            .sort({ joinedAt: -1 })
+            .skip((page - 1) * limit)
+            .limit(limit)
+            .toArray();
+        
+        const totalReferrals = await db.collection('users').countDocuments({ referredBy: userId });
+        const totalPages = Math.ceil(totalReferrals / limit);
+        
+        let referralsText = `👥 *My Referrals*\n\n`;
+        referralsText += `Total Referrals: ${totalReferrals}\n`;
+        referralsText += `Page ${page} of ${totalPages}\n\n`;
         
         if (referrals.length === 0) {
-            referralsText += `No referrals yet. Share your link to earn!\n`;
+            referralsText += `No referrals yet.\n`;
+            referralsText += `Start sharing your referral link to earn bonuses!\n`;
         } else {
-            referrals.forEach((ref, index) => {
-                const num = (page - 1) * 20 + index + 1;
-                const status = ref.joinedAll ? '✅' : '❌';
-                const name = ref.firstName || `User ${ref.userId}`;
-                referralsText += `${num}. ${status} ${name} (${ref.username ? '@' + ref.username : 'No username'})\n`;
-                referralsText += `   📅 Joined: ${new Date(ref.joinedAt).toLocaleDateString()}\n\n`;
-            });
+            referralsText += `*Referral List:*\n\n`;
+            
+            for (let i = 0; i < referrals.length; i++) {
+                const referral = referrals[i];
+                const index = (page - 1) * limit + i + 1;
+                const name = referral.firstName || 'User';
+                const username = referral.username ? `@${referral.username}` : 'No username';
+                const joinedDate = new Date(referral.joinedAt).toLocaleDateString();
+                const status = referral.joinedAll ? '✅ Verified' : '⏳ Pending';
+                
+                referralsText += `${index}. *${name}* (${username})\n`;
+                referralsText += `   Status: ${status}\n`;
+                referralsText += `   Joined: ${joinedDate}\n`;
+                referralsText += `   ID: \`${referral.userId}\`\n\n`;
+            }
         }
         
         const keyboard = [];
         
         // Navigation buttons
-        if (referralsData.hasPrev || referralsData.hasNext) {
+        if (totalPages > 1) {
             const navRow = [];
-            if (referralsData.hasPrev) {
-                navRow.push({ text: '◀️ Previous', callback_data: `view_referrals_${page - 1}` });
+            if (page > 1) {
+                navRow.push({ text: '◀️ Previous', callback_data: `referrals_page_${page - 1}` });
             }
-            navRow.push({ text: `📄 ${page}/${referralsData.totalPages}`, callback_data: 'no_action' });
-            if (referralsData.hasNext) {
-                navRow.push({ text: 'Next ▶️', callback_data: `view_referrals_${page + 1}` });
+            navRow.push({ text: `📄 ${page}/${totalPages}`, callback_data: 'no_action' });
+            if (page < totalPages) {
+                navRow.push({ text: 'Next ▶️', callback_data: `referrals_page_${page + 1}` });
             }
             keyboard.push(navRow);
         }
         
-        keyboard.push([{ text: '🔙 Back to Refer', callback_data: 'back_to_refer' }]);
+        keyboard.push(
+            [{ text: '📤 Share Referral Link', callback_data: 'user_refer' }],
+            [{ text: '🔙 Back to Menu', callback_data: 'back_to_menu' }]
+        );
         
-        if (ctx.callbackQuery) {
-            await safeEditMessage(ctx, referralsText, {
-                parse_mode: 'Markdown',
-                reply_markup: { inline_keyboard: keyboard }
-            });
-        } else {
-            await safeSendMessage(ctx, referralsText, {
-                parse_mode: 'Markdown',
-                reply_markup: { inline_keyboard: keyboard }
-            });
-        }
+        await ctx.deleteMessage().catch(() => {});
+        await safeSendMessage(ctx, referralsText, {
+            parse_mode: 'HTML',
+            reply_markup: { inline_keyboard: keyboard }
+        });
+        
     } catch (error) {
-        console.error('View referrals error:', error);
+        console.error('Referrals error:', error);
         await ctx.answerCbQuery('❌ Error loading referrals');
     }
 });
 
-// Back to Refer
-bot.action('back_to_refer', async (ctx) => {
+// Referrals pagination
+bot.action(/^referrals_page_(\d+)$/, async (ctx) => {
     try {
-        await ctx.deleteMessage().catch(() => {});
-        await bot.hears('📢 Refer & Earn')(ctx);
+        const page = parseInt(ctx.match[1]);
+        ctx.session.referralsPage = page;
+        await bot.action('user_referrals')(ctx);
     } catch (error) {
-        console.error('Back to refer error:', error);
+        console.error('Referrals pagination error:', error);
     }
 });
 
-// Bonus
-bot.hears('🎁 Bonus', async (ctx) => {
+// ==========================================
+// USER FEATURES - BONUS
+// ==========================================
+
+bot.action('user_bonus', async (ctx) => {
     try {
         const userId = ctx.from.id;
-        const config = await db.collection('admin').findOne({ type: 'config' });
         
-        // Check if bonus is enabled
-        if (config?.bonusEnabled === false) {
-            await safeSendMessage(ctx, '⚠️ Bonus is currently disabled. Please check back later.', {
+        const [config, userData] = await Promise.all([
+            db.collection('admin').findOne({ type: 'config' }),
+            db.collection('users').findOne({ userId: userId })
+        ]);
+        
+        const bonusSettings = config?.bonusSettings || DEFAULT_CONFIG.bonus;
+        
+        if (!bonusSettings.enabled) {
+            await safeSendMessage(ctx, '❌ *Bonus feature is currently disabled.*\n\nPlease check back later or contact support for more information.', {
+                parse_mode: 'HTML',
                 reply_markup: {
                     inline_keyboard: [[
                         { text: '🔙 Back to Menu', callback_data: 'back_to_menu' }
@@ -1706,26 +2067,61 @@ bot.hears('🎁 Bonus', async (ctx) => {
             return;
         }
         
-        const bonusAmount = config?.bonusAmount || DEFAULT_CONFIG.bonusAmount;
-        let bonusImage = config?.bonusImage || DEFAULT_CONFIG.bonusImage;
+        // Check if user has already claimed bonus
+        const hasClaimedBonus = userData?.bonusClaimed || false;
         
-        // Add name overlay to bonus image
-        const user = ctx.from;
-        bonusImage = await getCloudinaryUrlWithName(bonusImage, user.first_name || 'User', 'bonusImage');
+        let bonusText = `🎁 *Daily Bonus*\n\n`;
         
-        await ctx.replyWithPhoto(bonusImage, {
-            caption: `🎁 *Daily Bonus*\n\n💰 Claim ${bonusAmount} ₹ daily bonus!\n\nClick the button below to claim your bonus:`,
-            parse_mode: 'Markdown',
-            reply_markup: {
-                inline_keyboard: [[
-                    { text: '🎁 Claim Bonus', callback_data: 'claim_bonus' },
-                    { text: '🔙 Back to Menu', callback_data: 'back_to_menu' }
-                ]]
+        if (hasClaimedBonus) {
+            bonusText += `⏳ *You have already claimed your bonus today!*\n\n`;
+            bonusText += `Come back tomorrow for more rewards!\n\n`;
+            bonusText += `*Next Bonus Available:* Tomorrow at 00:00\n`;
+        } else {
+            const bonusAmount = bonusSettings.amount || 25;
+            bonusText += `💰 *Daily Bonus Available:* ${formatCurrency(bonusAmount)}\n\n`;
+            bonusText += `*How to claim:*\n`;
+            bonusText += `1. Click the "Claim Bonus" button below\n`;
+            bonusText += `2. Bonus will be added to your balance instantly\n`;
+            bonusText += `3. You can claim once every 24 hours\n\n`;
+            bonusText += `*Note:* This is a limited time offer!\n`;
+        }
+        
+        const keyboard = [];
+        
+        if (!hasClaimedBonus) {
+            keyboard.push([{ text: '🎁 Claim Bonus Now', callback_data: 'claim_bonus' }]);
+        }
+        
+        keyboard.push(
+            [{ text: '🎫 Gift Code', callback_data: 'user_gift_code' }],
+            [{ text: '🔙 Back to Menu', callback_data: 'back_to_menu' }]
+        );
+        
+        // Send bonus image if available
+        if (bonusSettings.image && bonusSettings.image !== 'none') {
+            let bonusImage = bonusSettings.image;
+            const bonusAmount = bonusSettings.amount || 25;
+            
+            if (bonusSettings.showAmountOverlay) {
+                bonusImage = await getCloudinaryUrlWithName(bonusImage, ctx.from.first_name || 'User', bonusAmount, 'bonusImage');
             }
-        });
+            
+            await ctx.replyWithPhoto(bonusImage, {
+                caption: bonusText,
+                parse_mode: 'HTML',
+                reply_markup: { inline_keyboard: keyboard }
+            });
+        } else {
+            await ctx.deleteMessage().catch(() => {});
+            await safeSendMessage(ctx, bonusText, {
+                parse_mode: 'HTML',
+                reply_markup: { inline_keyboard: keyboard }
+            });
+        }
+        
     } catch (error) {
         console.error('Bonus error:', error);
-        await safeSendMessage(ctx, '❌ Error loading bonus.');
+        await ctx.answerCbQuery('❌ Error loading bonus');
     }
 });
 
@@ -1733,34 +2129,61 @@ bot.hears('🎁 Bonus', async (ctx) => {
 bot.action('claim_bonus', async (ctx) => {
     try {
         const userId = ctx.from.id;
-        const config = await db.collection('admin').findOne({ type: 'config' });
-        const bonusAmount = config?.bonusAmount || DEFAULT_CONFIG.bonusAmount;
         
-        // Check last bonus claim
-        const lastBonus = await db.collection('transactions').findOne({
-            userId: userId,
-            type: 'bonus',
-            createdAt: { $gte: new Date(Date.now() - 24 * 60 * 60 * 1000) } // Last 24 hours
-        });
+        const [config, userData] = await Promise.all([
+            db.collection('admin').findOne({ type: 'config' }),
+            db.collection('users').findOne({ userId: userId })
+        ]);
         
-        if (lastBonus) {
-            await ctx.answerCbQuery('⏳ You can claim bonus again in 24 hours');
+        const bonusSettings = config?.bonusSettings || DEFAULT_CONFIG.bonus;
+        
+        if (!bonusSettings.enabled) {
+            await ctx.answerCbQuery('❌ Bonus feature is disabled');
             return;
         }
         
-        // Add bonus transaction
-        await addTransaction(userId, bonusAmount, 'bonus', 'Daily bonus claim');
+        if (userData?.bonusClaimed) {
+            await ctx.answerCbQuery('❌ You have already claimed bonus today');
+            return;
+        }
         
-        await ctx.answerCbQuery(`✅ ${bonusAmount} ₹ bonus claimed!`);
+        const bonusAmount = bonusSettings.amount || 25;
         
-        // Update message
-        await safeEditMessage(ctx, `🎁 *Bonus Claimed!*\n\n✅ You claimed ${bonusAmount} ₹ bonus!\n\n💰 Check your balance for updates.\n\n⏳ Next bonus available in 24 hours.`, {
-            parse_mode: 'Markdown',
-            reply_markup: {
-                inline_keyboard: [[
-                    { text: '🔙 Back to Menu', callback_data: 'back_to_menu' }
-                ]]
+        // Add bonus to user balance
+        await updateUserBalance(userId, bonusAmount, 'add');
+        
+        // Mark bonus as claimed
+        await db.collection('users').updateOne(
+            { userId: userId },
+            { 
+                $set: { 
+                    bonusClaimed: true,
+                    bonusClaimedAt: new Date(),
+                    updatedAt: new Date()
+                }
             }
+        );
+        
+        // Add transaction record
+        await addTransaction(userId, 'bonus', bonusAmount, 'Daily bonus claimed');
+        
+        await ctx.answerCbQuery(`✅ Bonus claimed! ${formatCurrency(bonusAmount)} added to your balance`);
+        
+        // Show success message
+        const successText = `🎉 *Bonus Claimed Successfully!*\n\n`;
+        successText += `💰 *Amount:* ${formatCurrency(bonusAmount)}\n`;
+        successText += `📅 *Date:* ${new Date().toLocaleString()}\n`;
+        successText += `💳 *New Balance:* ${formatCurrency((userData.balance || 0) + bonusAmount)}\n\n`;
+        successText += `*Note:* You can claim bonus again after 24 hours.\n`;
+        
+        const keyboard = [
+            [{ text: '💰 Check Balance', callback_data: 'user_balance' }],
+            [{ text: '🔙 Back to Menu', callback_data: 'back_to_menu' }]
+        ];
+        
+        await safeEditMessage(ctx, successText, {
+            parse_mode: 'HTML',
+            reply_markup: { inline_keyboard: keyboard }
         });
         
     } catch (error) {
@@ -1769,555 +2192,711 @@ bot.action('claim_bonus', async (ctx) => {
     }
 });
 
-// Tasks
-bot.hears('📋 Tasks', async (ctx) => {
+// ==========================================
+// USER FEATURES - GIFT CODE
+// ==========================================
+
+bot.action('user_gift_code', async (ctx) => {
     try {
-        const userId = ctx.from.id;
-        const config = await db.collection('admin').findOne({ type: 'config' });
+        const giftText = `🎫 *Redeem Gift Code*\n\n`;
+        giftText += `Enter your gift code below:\n\n`;
+        giftText += `*How to get gift codes:*\n`;
+        giftText += `• Admin promotions\n`;
+        giftText += `• Special events\n`;
+        giftText += `• Giveaways\n\n`;
+        giftText += `*Note:* Each code can be used only once.\n`;
+        giftText += `Type "cancel" to cancel.`;
         
-        // Check if tasks are enabled
-        if (config?.tasksEnabled === false) {
-            await safeSendMessage(ctx, '⚠️ Tasks are currently disabled. Please check back later.', {
-                reply_markup: {
-                    inline_keyboard: [[
-                        { text: '🔙 Back to Menu', callback_data: 'back_to_menu' }
-                    ]]
-                }
-            });
-            return;
-        }
-        
-        // Get active tasks
-        const tasks = await db.collection('tasks')
-            .find({ isActive: true })
-            .sort({ createdAt: -1 })
-            .limit(10)
-            .toArray();
-        
-        if (tasks.length === 0) {
-            await safeSendMessage(ctx, '📝 *Available Tasks*\n\nNo tasks available at the moment. Please check back later!', {
-                parse_mode: 'Markdown',
-                reply_markup: {
-                    inline_keyboard: [[
-                        { text: '🔙 Back to Menu', callback_data: 'back_to_menu' }
-                    ]]
-                }
-            });
-            return;
-        }
-        
-        let tasksText = `📝 *Available Tasks*\n\n`;
-        
-        tasks.forEach((task, index) => {
-            tasksText += `${index + 1}. *${task.title}*\n`;
-            tasksText += `   💰 Reward: ${task.reward} ₹\n`;
-            tasksText += `   📊 Completed: ${task.completedCount || 0} times\n\n`;
-        });
-        
-        // Create task buttons
-        const keyboard = [];
-        
-        tasks.forEach((task, index) => {
-            keyboard.push([{ 
-                text: `${index + 1}. ${task.title} (${task.reward} ₹)`, 
-                callback_data: `view_task_${task._id}` 
-            }]);
-        });
-        
-        keyboard.push([{ text: '📋 Task History', callback_data: 'task_history_1' }]);
-        keyboard.push([{ text: '🔙 Back to Menu', callback_data: 'back_to_menu' }]);
-        
-        await safeSendMessage(ctx, tasksText, {
-            parse_mode: 'Markdown',
-            reply_markup: { inline_keyboard: keyboard }
-        });
-        
-    } catch (error) {
-        console.error('Tasks error:', error);
-        await safeSendMessage(ctx, '❌ Error loading tasks.');
-    }
-});
-
-// View Task
-bot.action(/^view_task_(.+)$/, async (ctx) => {
-    try {
-        const taskId = ctx.match[1];
-        const task = await db.collection('tasks').findOne({ _id: new ObjectId(taskId) });
-        
-        if (!task) {
-            await ctx.answerCbQuery('❌ Task not found');
-            return;
-        }
-        
-        let taskText = `📋 *${task.title}*\n\n`;
-        taskText += `📝 Description:\n${task.description}\n\n`;
-        taskText += `💰 Reward: *${task.reward} ₹*\n`;
-        taskText += `📊 Completed: ${task.completedCount || 0} times\n`;
-        taskText += `📅 Added: ${new Date(task.createdAt).toLocaleDateString()}\n\n`;
-        
-        if (task.instructions) {
-            taskText += `📌 Instructions:\n${task.instructions}\n\n`;
-        }
-        
-        // Check if user has already submitted this task
-        const userId = ctx.from.id;
-        const existingSubmission = await db.collection('task_submissions').findOne({
-            userId: userId,
-            taskId: taskId,
-            status: { $in: ['pending', 'approved'] }
-        });
-        
-        const keyboard = [];
-        
-        if (existingSubmission) {
-            const statusEmoji = existingSubmission.status === 'approved' ? '✅' : '⏳';
-            taskText += `📤 Your submission: ${statusEmoji} ${existingSubmission.status.toUpperCase()}\n`;
-            
-            if (existingSubmission.status === 'approved') {
-                keyboard.push([{ text: '✅ Already Completed', callback_data: 'no_action' }]);
-            } else {
-                keyboard.push([{ text: '⏳ Under Review', callback_data: 'no_action' }]);
-            }
-        } else {
-            // Add screenshot upload buttons
-            if (task.screenshotsRequired && task.screenshotsRequired > 0) {
-                taskText += `📸 Screenshots Required: ${task.screenshotsRequired}\n\n`;
-                taskText += `Click the buttons below to upload your screenshots:\n`;
-                
-                for (let i = 1; i <= task.screenshotsRequired; i++) {
-                    const buttonName = task.screenshotNames?.[i - 1] || `Screenshot ${i}`;
-                    keyboard.push([{ 
-                        text: `📸 Upload ${buttonName}`, 
-                        callback_data: `upload_ss_${taskId}_${i}` 
-                    }]);
-                }
-            } else {
-                keyboard.push([{ 
-                    text: '✅ Complete Task', 
-                    callback_data: `complete_task_${taskId}` 
-                }]);
-            }
-        }
-        
-        keyboard.push([{ text: '🔙 Back to Tasks', callback_data: 'back_to_tasks' }]);
-        
-        // Send task image if available
-        if (task.image) {
-            await ctx.replyWithPhoto(task.image, {
-                caption: taskText,
-                parse_mode: 'Markdown',
-                reply_markup: { inline_keyboard: keyboard }
-            });
-        } else {
-            await safeSendMessage(ctx, taskText, {
-                parse_mode: 'Markdown',
-                reply_markup: { inline_keyboard: keyboard }
-            });
-        }
-        
-    } catch (error) {
-        console.error('View task error:', error);
-        await ctx.answerCbQuery('❌ Error loading task');
-    }
-});
-
-// Upload Screenshot
-bot.action(/^upload_ss_(.+)_(\d+)$/, async (ctx) => {
-    try {
-        const [taskId, ssNumber] = ctx.match[1].split('_');
-        const task = await db.collection('tasks').findOne({ _id: new ObjectId(taskId) });
-        
-        if (!task) {
-            await ctx.answerCbQuery('❌ Task not found');
-            return;
-        }
-        
-        // Store in session
-        ctx.session.uploadingSS = {
-            taskId: taskId,
-            ssNumber: parseInt(ssNumber),
-            totalSS: task.screenshotsRequired,
-            screenshotNames: task.screenshotNames || []
-        };
-        
-        const buttonName = task.screenshotNames?.[parseInt(ssNumber) - 1] || `Screenshot ${ssNumber}`;
-        
-        await safeSendMessage(ctx, `📸 *Upload ${buttonName}*\n\nPlease send the screenshot for ${task.title}\n\nType "cancel" to cancel.`, {
-            parse_mode: 'Markdown'
-        });
-        
-        // Enter appropriate scene based on screenshot number
-        if (parseInt(ssNumber) === 1) {
-            await ctx.scene.enter('upload_task_ss1_scene');
-        } else if (parseInt(ssNumber) === 2) {
-            await ctx.scene.enter('upload_task_ss2_scene');
-        } else if (parseInt(ssNumber) === 3) {
-            await ctx.scene.enter('upload_task_ss3_scene');
-        }
-        
-    } catch (error) {
-        console.error('Upload SS error:', error);
-        await ctx.answerCbQuery('❌ Error');
-    }
-});
-
-// Handle screenshot upload scenes
-scenes.uploadTaskSS1.on('photo', async (ctx) => {
-    await handleScreenshotUpload(ctx, 1);
-});
-
-scenes.uploadTaskSS2.on('photo', async (ctx) => {
-    await handleScreenshotUpload(ctx, 2);
-});
-
-scenes.uploadTaskSS3.on('photo', async (ctx) => {
-    await handleScreenshotUpload(ctx, 3);
-});
-
-async function handleScreenshotUpload(ctx, ssNumber) {
-    try {
-        if (!ctx.session.uploadingSS) {
-            await safeSendMessage(ctx, '❌ Session expired. Please start again.');
-            await ctx.scene.leave();
-            return;
-        }
-        
-        const { taskId, totalSS, screenshotNames } = ctx.session.uploadingSS;
-        const userId = ctx.from.id;
-        
-        // Store screenshot
-        if (!ctx.session.taskScreenshots) {
-            ctx.session.taskScreenshots = {};
-        }
-        if (!ctx.session.taskScreenshots[taskId]) {
-            ctx.session.taskScreenshots[taskId] = {};
-        }
-        
-        const photo = ctx.message.photo[ctx.message.photo.length - 1];
-        ctx.session.taskScreenshots[taskId][`ss${ssNumber}`] = photo.file_id;
-        
-        await ctx.scene.leave();
-        
-        // Check if all screenshots uploaded
-        const uploadedCount = Object.keys(ctx.session.taskScreenshots[taskId]).length;
-        
-        if (uploadedCount >= totalSS) {
-            // All screenshots uploaded, create submission
-            await createTaskSubmission(ctx, taskId);
-            delete ctx.session.uploadingSS;
-        } else {
-            // Ask for next screenshot
-            const nextSS = uploadedCount + 1;
-            const buttonName = screenshotNames[nextSS - 1] || `Screenshot ${nextSS}`;
-            
-            await safeSendMessage(ctx, `✅ Screenshot ${ssNumber} uploaded!\n\n📸 Please upload ${buttonName}:\n\nType "cancel" to cancel.`, {
-                parse_mode: 'Markdown'
-            });
-            
-            // Update session and enter next scene
-            ctx.session.uploadingSS.ssNumber = nextSS;
-            
-            if (nextSS === 1) {
-                await ctx.scene.enter('upload_task_ss1_scene');
-            } else if (nextSS === 2) {
-                await ctx.scene.enter('upload_task_ss2_scene');
-            } else if (nextSS === 3) {
-                await ctx.scene.enter('upload_task_ss3_scene');
-            }
-        }
-        
-    } catch (error) {
-        console.error('Handle screenshot upload error:', error);
-        await safeSendMessage(ctx, '❌ Error uploading screenshot.');
-        await ctx.scene.leave();
-    }
-}
-
-async function createTaskSubmission(ctx, taskId) {
-    try {
-        const userId = ctx.from.id;
-        const task = await db.collection('tasks').findOne({ _id: new ObjectId(taskId) });
-        
-        if (!task) {
-            await safeSendMessage(ctx, '❌ Task not found.');
-            return;
-        }
-        
-        // Create submission
-        const submission = {
-            userId: userId,
-            taskId: taskId,
-            taskTitle: task.title,
-            reward: task.reward,
-            screenshots: ctx.session.taskScreenshots?.[taskId] || {},
-            status: 'pending',
-            createdAt: new Date(),
-            userInfo: {
-                firstName: ctx.from.first_name,
-                lastName: ctx.from.last_name,
-                username: ctx.from.username
-            }
-        };
-        
-        await db.collection('task_submissions').insertOne(submission);
-        
-        // Clear session
-        if (ctx.session.taskScreenshots) {
-            delete ctx.session.taskScreenshots[taskId];
-        }
-        
-        // Notify admins
-        const userLink = ctx.from.username ? `@${ctx.from.username}` : ctx.from.first_name || `User ${userId}`;
-        await notifyAdmin(`📋 <b>New Task Submission</b>\n\n👤 User: ${userLink}\n🆔 User ID: <code>${userId}</code>\n📝 Task: ${task.title}\n💰 Reward: ${task.reward} ₹\n📅 Submitted: ${new Date().toLocaleString()}\n\n<pre>Click below to review:</pre>`, {
+        await ctx.deleteMessage().catch(() => {});
+        await safeSendMessage(ctx, giftText, {
+            parse_mode: 'HTML',
             reply_markup: {
                 inline_keyboard: [[
-                    { text: '👁️ Review Submission', callback_data: `review_task_${submission._id}` }
+                    { text: '🔙 Back to Menu', callback_data: 'back_to_menu' }
                 ]]
             }
-        });
-        
-        await safeSendMessage(ctx, `✅ Task submission received!\n\n📝 Task: *${task.title}*\n💰 Reward: *${task.reward} ₹*\n📤 Status: *Pending Review*\n\n⏳ Admin will review your submission within 24 hours.`, {
-            parse_mode: 'Markdown',
-            reply_markup: {
-                inline_keyboard: [[
-                    { text: '🔙 Back to Tasks', callback_data: 'back_to_tasks' }
-                ]]
-            }
-        });
-        
-    } catch (error) {
-        console.error('Create task submission error:', error);
-        await safeSendMessage(ctx, '❌ Error submitting task.');
-    }
-}
-
-// Complete Task (without screenshots)
-bot.action(/^complete_task_(.+)$/, async (ctx) => {
-    try {
-        const taskId = ctx.match[1];
-        const userId = ctx.from.id;
-        const task = await db.collection('tasks').findOne({ _id: new ObjectId(taskId) });
-        
-        if (!task) {
-            await ctx.answerCbQuery('❌ Task not found');
-            return;
-        }
-        
-        // Check if already submitted
-        const existingSubmission = await db.collection('task_submissions').findOne({
-            userId: userId,
-            taskId: taskId,
-            status: { $in: ['pending', 'approved'] }
-        });
-        
-        if (existingSubmission) {
-            await ctx.answerCbQuery('⏳ Task already submitted');
-            return;
-        }
-        
-        // Create submission
-        const submission = {
-            userId: userId,
-            taskId: taskId,
-            taskTitle: task.title,
-            reward: task.reward,
-            status: 'pending',
-            createdAt: new Date(),
-            userInfo: {
-                firstName: ctx.from.first_name,
-                lastName: ctx.from.last_name,
-                username: ctx.from.username
-            }
-        };
-        
-        await db.collection('task_submissions').insertOne(submission);
-        
-        // Notify admins
-        const userLink = ctx.from.username ? `@${ctx.from.username}` : ctx.from.first_name || `User ${userId}`;
-        await notifyAdmin(`📋 <b>New Task Submission</b>\n\n👤 User: ${userLink}\n🆔 User ID: <code>${userId}</code>\n📝 Task: ${task.title}\n💰 Reward: ${task.reward} ₹\n\n<pre>Click below to approve:</pre>`, {
-            reply_markup: {
-                inline_keyboard: [[
-                    { text: '✅ Approve', callback_data: `approve_task_${submission._id}` },
-                    { text: '❌ Reject', callback_data: `reject_task_${submission._id}` }
-                ]]
-            }
-        });
-        
-        await ctx.answerCbQuery('✅ Task submitted for review!');
-        
-        await safeEditMessage(ctx, `✅ Task submitted!\n\n📝 Task: *${task.title}*\n💰 Reward: *${task.reward} ₹*\n📤 Status: *Pending Review*\n\n⏳ Admin will review your submission soon.`, {
-            parse_mode: 'Markdown',
-            reply_markup: {
-                inline_keyboard: [[
-                    { text: '🔙 Back to Tasks', callback_data: 'back_to_tasks' }
-                ]]
-            }
-        });
-        
-    } catch (error) {
-        console.error('Complete task error:', error);
-        await ctx.answerCbQuery('❌ Error submitting task');
-    }
-});
-
-// Gift Code
-bot.hears('🎫 Gift Code', async (ctx) => {
-    try {
-        await safeSendMessage(ctx, '🎫 *Redeem Gift Code*\n\nEnter a gift code to redeem bonus amount:\n\nType "cancel" to cancel.', {
-            parse_mode: 'Markdown'
         });
         
         await ctx.scene.enter('enter_gift_code_scene');
         
     } catch (error) {
         console.error('Gift code error:', error);
-        await safeSendMessage(ctx, '❌ Error loading gift code section.');
+        await ctx.answerCbQuery('❌ Error loading gift code');
     }
 });
 
 // Enter Gift Code Scene
 scenes.enterGiftCode.on('text', async (ctx) => {
     try {
-        if (ctx.message.text.toLowerCase() === 'cancel') {
+        const userId = ctx.from.id;
+        const codeInput = ctx.message.text.trim().toUpperCase();
+        
+        if (codeInput.toLowerCase() === 'cancel') {
             await safeSendMessage(ctx, '❌ Gift code redemption cancelled.');
             await ctx.scene.leave();
             await showMainMenu(ctx);
             return;
         }
         
-        const code = ctx.message.text.trim().toUpperCase();
-        const userId = ctx.from.id;
-        
         // Find gift code
-        const giftCode = await db.collection('gift_codes').findOne({ 
-            code: code,
+        const giftCode = await db.collection('giftcodes').findOne({ 
+            code: codeInput,
             isActive: true
         });
         
         if (!giftCode) {
-            await safeSendMessage(ctx, '❌ Invalid or expired gift code.');
+            await safeSendMessage(ctx, '❌ *Invalid or expired gift code!*\n\nPlease check the code and try again.\n\nType "cancel" to cancel.', {
+                parse_mode: 'HTML'
+            });
             return;
         }
         
-        // Check if expired
+        // Check expiry
         if (giftCode.expiresAt && new Date(giftCode.expiresAt) < new Date()) {
-            await db.collection('gift_codes').updateOne(
-                { _id: giftCode._id },
-                { $set: { isActive: false } }
-            );
-            await safeSendMessage(ctx, '❌ Gift code has expired.');
+            await safeSendMessage(ctx, '❌ *This gift code has expired!*\n\nType "cancel" to cancel.', {
+                parse_mode: 'HTML'
+            });
             return;
         }
         
-        // Check max uses
+        // Check usage limit
         if (giftCode.maxUses && giftCode.usedCount >= giftCode.maxUses) {
-            await db.collection('gift_codes').updateOne(
-                { _id: giftCode._id },
-                { $set: { isActive: false } }
-            );
-            await safeSendMessage(ctx, '❌ Gift code has reached maximum uses.');
+            await safeSendMessage(ctx, '❌ *This gift code has reached maximum usage limit!*\n\nType "cancel" to cancel.', {
+                parse_mode: 'HTML'
+            });
             return;
         }
         
-        // Check if user already used this code
-        const alreadyUsed = await db.collection('transactions').findOne({
-            userId: userId,
-            description: { $regex: `Gift code: ${code}` }
-        });
+        // Check if user has already used this code
+        const userData = await db.collection('users').findOne({ userId: userId });
+        const usedCodes = userData?.giftCodesUsed || [];
         
-        if (alreadyUsed) {
-            await safeSendMessage(ctx, '❌ You have already used this gift code.');
+        if (usedCodes.includes(codeInput)) {
+            await safeSendMessage(ctx, '❌ *You have already used this gift code!*\n\nType "cancel" to cancel.', {
+                parse_mode: 'HTML'
+            });
             return;
         }
         
-        // Generate random amount if range specified
+        // Calculate amount (random between min and max if range specified)
         let amount = giftCode.amount;
         if (giftCode.minAmount && giftCode.maxAmount) {
             amount = Math.floor(Math.random() * (giftCode.maxAmount - giftCode.minAmount + 1)) + giftCode.minAmount;
         }
         
-        // Add transaction
-        await addTransaction(userId, amount, 'bonus', `Gift code: ${code}`);
+        // Add amount to user balance
+        await updateUserBalance(userId, amount, 'add');
         
         // Update gift code usage
-        await db.collection('gift_codes').updateOne(
-            { _id: giftCode._id },
+        await db.collection('giftcodes').updateOne(
+            { code: codeInput },
             { 
                 $inc: { usedCount: 1 },
-                $push: { usedBy: { userId: userId, amount: amount, usedAt: new Date() } }
+                $push: { usedBy: userId }
             }
         );
         
-        // Check if reached max uses
-        if (giftCode.maxUses && giftCode.usedCount + 1 >= giftCode.maxUses) {
-            await db.collection('gift_codes').updateOne(
-                { _id: giftCode._id },
-                { $set: { isActive: false } }
-            );
+        // Update user's used codes
+        await db.collection('users').updateOne(
+            { userId: userId },
+            { 
+                $push: { giftCodesUsed: codeInput },
+                $set: { updatedAt: new Date() }
+            }
+        );
+        
+        // Add transaction record
+        await addTransaction(userId, 'giftcode', amount, `Gift code: ${codeInput}`);
+        
+        // Prepare success message
+        const successText = `🎉 *Gift Code Redeemed Successfully!*\n\n`;
+        successText += `🎫 *Code:* \`${codeInput}\`\n`;
+        successText += `💰 *Amount:* ${formatCurrency(amount)}\n`;
+        successText += `📅 *Date:* ${new Date().toLocaleString()}\n`;
+        successText += `💳 *New Balance:* ${formatCurrency((userData.balance || 0) + amount)}\n\n`;
+        successText += `*Remaining uses:* ${giftCode.maxUses ? giftCode.maxUses - giftCode.usedCount - 1 : 'Unlimited'}\n`;
+        
+        if (giftCode.expiresAt) {
+            const expiryDate = new Date(giftCode.expiresAt).toLocaleDateString();
+            successText += `*Expires:* ${expiryDate}\n`;
         }
         
-        await safeSendMessage(ctx, `✅ Gift code redeemed successfully!\n\n🎫 Code: \`${code}\`\n💰 Amount: ${amount} ₹\n\n💰 Check your balance for updates.`, {
-            parse_mode: 'Markdown',
-            reply_markup: {
-                inline_keyboard: [[
-                    { text: '🔙 Back to Menu', callback_data: 'back_to_menu' }
-                ]]
-            }
+        const keyboard = [
+            [{ text: '💰 Check Balance', callback_data: 'user_balance' }],
+            [{ text: '🎫 Redeem Another Code', callback_data: 'user_gift_code' }],
+            [{ text: '🔙 Back to Menu', callback_data: 'back_to_menu' }]
+        ];
+        
+        await safeSendMessage(ctx, successText, {
+            parse_mode: 'HTML',
+            reply_markup: { inline_keyboard: keyboard }
         });
         
         await ctx.scene.leave();
         
     } catch (error) {
         console.error('Enter gift code scene error:', error);
-        await safeSendMessage(ctx, '❌ Error redeeming gift code.');
+        await safeSendMessage(ctx, '❌ Error redeeming gift code. Please try again.');
         await ctx.scene.leave();
     }
 });
 
-// Contact Admin
-bot.hears('📞 Contact Admin', async (ctx) => {
+// ==========================================
+// USER FEATURES - TASKS
+// ==========================================
+
+bot.action('user_tasks', async (ctx) => {
     try {
-        const user = ctx.from;
-        const userInfo = user.username ? `@${user.username}` : user.first_name || `User ${user.id}`;
+        const userId = ctx.from.id;
+        const page = ctx.session?.tasksPage || 1;
+        const limit = 10;
         
-        let errorReport = '';
-        if (ctx.session?.lastError) {
-            const error = ctx.session.lastError;
-            errorReport = `⚠️ <b>ERROR REPORT</b>\n\n`;
-            errorReport += `<b>Command/Function:</b> ${error.command || error.function || 'Unknown'}\n`;
-            errorReport += `<b>User:</b> ${userInfo}\n`;
-            errorReport += `<b>User ID:</b> <code>${user.id}</code>\n`;
-            errorReport += `<b>Error:</b> <code>${escapeMarkdown(error.error)}</code>\n`;
-            delete ctx.session.lastError;
+        const totalTasks = await db.collection('tasks').countDocuments({ isActive: true });
+        const totalPages = Math.ceil(totalTasks / limit);
+        const skip = (page - 1) * limit;
+        
+        const tasks = await db.collection('tasks')
+            .find({ isActive: true })
+            .sort({ createdAt: -1 })
+            .skip(skip)
+            .limit(limit)
+            .toArray();
+        
+        let tasksText = `📋 *Available Tasks*\n\n`;
+        tasksText += `Page ${page} of ${totalPages}\n`;
+        tasksText += `Total Tasks: ${totalTasks}\n\n`;
+        
+        if (tasks.length === 0) {
+            tasksText += `No tasks available at the moment.\n`;
+            tasksText += `Check back later for new tasks!\n`;
         } else {
-            errorReport = `📞 <b>User wants to contact admin</b>\n\n`;
-            errorReport += `<b>User:</b> ${userInfo}\n`;
-            errorReport += `<b>User ID:</b> <code>${user.id}</code>\n`;
+            tasksText += `*Task List:*\n\n`;
+            
+            for (let i = 0; i < tasks.length; i++) {
+                const task = tasks[i];
+                const index = skip + i + 1;
+                
+                tasksText += `${index}. *${task.title}*\n`;
+                tasksText += `   Reward: ${formatCurrency(task.bonusAmount)}\n`;
+                tasksText += `   Screenshots: ${task.screenshotCount || 1}\n`;
+                tasksText += `   Status: ${task.isActive ? '✅ Active' : '❌ Inactive'}\n\n`;
+            }
         }
         
+        const keyboard = [];
+        
+        // Task buttons
+        for (let i = 0; i < tasks.length; i += 2) {
+            const row = [];
+            for (let j = 0; j < 2 && (i + j) < tasks.length; j++) {
+                const task = tasks[i + j];
+                row.push({ 
+                    text: `${skip + i + j + 1}. ${task.title.substring(0, 15)}...`, 
+                    callback_data: `view_task_${task.taskId}` 
+                });
+            }
+            if (row.length > 0) keyboard.push(row);
+        }
+        
+        // Navigation buttons
+        if (totalPages > 1) {
+            const navRow = [];
+            if (page > 1) {
+                navRow.push({ text: '◀️ Previous', callback_data: `tasks_page_${page - 1}` });
+            }
+            navRow.push({ text: `📄 ${page}/${totalPages}`, callback_data: 'no_action' });
+            if (page < totalPages) {
+                navRow.push({ text: 'Next ▶️', callback_data: `tasks_page_${page + 1}` });
+            }
+            keyboard.push(navRow);
+        }
+        
+        keyboard.push(
+            [{ text: '📊 Task History', callback_data: 'task_history' }],
+            [{ text: '🔙 Back to Menu', callback_data: 'back_to_menu' }]
+        );
+        
+        await ctx.deleteMessage().catch(() => {});
+        await safeSendMessage(ctx, tasksText, {
+            parse_mode: 'HTML',
+            reply_markup: { inline_keyboard: keyboard }
+        });
+        
+    } catch (error) {
+        console.error('Tasks error:', error);
+        await ctx.answerCbQuery('❌ Error loading tasks');
+    }
+});
+
+// View Task Details
+bot.action(/^view_task_(.+)$/, async (ctx) => {
+    try {
+        const taskId = ctx.match[1];
+        const userId = ctx.from.id;
+        
+        const task = await db.collection('tasks').findOne({ taskId: taskId });
+        
+        if (!task) {
+            await ctx.answerCbQuery('❌ Task not found');
+            return;
+        }
+        
+        // Check if user has already submitted this task
+        const existingSubmission = await db.collection('tasksubmissions').findOne({
+            userId: userId,
+            taskId: taskId
+        });
+        
+        let taskText = `📋 *Task Details*\n\n`;
+        taskText += `*Title:* ${task.title}\n`;
+        taskText += `*Reward:* ${formatCurrency(task.bonusAmount)}\n`;
+        taskText += `*Screenshots Required:* ${task.screenshotCount || 1}\n\n`;
+        taskText += `*Description:*\n${task.description}\n\n`;
+        
+        if (task.instructions) {
+            taskText += `*Instructions:*\n${task.instructions}\n\n`;
+        }
+        
+        if (existingSubmission) {
+            const statusEmoji = existingSubmission.status === 'approved' ? '✅' : 
+                               existingSubmission.status === 'rejected' ? '❌' : '⏳';
+            taskText += `*Your Status:* ${statusEmoji} ${existingSubmission.status.toUpperCase()}\n`;
+            
+            if (existingSubmission.status === 'rejected' && existingSubmission.adminMessage) {
+                taskText += `*Reason:* ${existingSubmission.adminMessage}\n`;
+            }
+            
+            if (existingSubmission.status === 'approved') {
+                taskText += `*Approved At:* ${new Date(existingSubmission.approvedAt).toLocaleString()}\n`;
+            }
+        }
+        
+        const keyboard = [];
+        
+        if (!existingSubmission || existingSubmission.status === 'rejected') {
+            keyboard.push([{ text: '✅ Start Task', callback_data: `start_task_${taskId}` }]);
+        }
+        
+        // Show task images if available
+        if (task.images && task.images.length > 0) {
+            // Send first image with caption
+            await ctx.replyWithPhoto(task.images[0], {
+                caption: taskText,
+                parse_mode: 'HTML',
+                reply_markup: { inline_keyboard: keyboard }
+            });
+            
+            // Send remaining images
+            for (let i = 1; i < task.images.length; i++) {
+                await ctx.replyWithPhoto(task.images[i]);
+            }
+        } else {
+            await safeEditMessage(ctx, taskText, {
+                parse_mode: 'HTML',
+                reply_markup: { inline_keyboard: keyboard }
+            });
+        }
+        
+    } catch (error) {
+        console.error('View task error:', error);
+        await ctx.answerCbQuery('❌ Error loading task details');
+    }
+});
+
+// Start Task
+bot.action(/^start_task_(.+)$/, async (ctx) => {
+    try {
+        const taskId = ctx.match[1];
+        const userId = ctx.from.id;
+        
+        const task = await db.collection('tasks').findOne({ taskId: taskId });
+        
+        if (!task) {
+            await ctx.answerCbQuery('❌ Task not found');
+            return;
+        }
+        
+        // Check if user has already submitted
+        const existingSubmission = await db.collection('tasksubmissions').findOne({
+            userId: userId,
+            taskId: taskId
+        });
+        
+        if (existingSubmission && existingSubmission.status !== 'rejected') {
+            await ctx.answerCbQuery('❌ You have already submitted this task');
+            return;
+        }
+        
+        // Store task info in session
+        ctx.session.taskSubmission = {
+            taskId: taskId,
+            taskTitle: task.title,
+            screenshotCount: task.screenshotCount || 1,
+            screenshotLabels: task.screenshotLabels || [],
+            currentScreenshot: 1,
+            screenshots: []
+        };
+        
+        let taskStartText = `🚀 *Starting Task: ${task.title}*\n\n`;
+        taskStartText += `*Reward:* ${formatCurrency(task.bonusAmount)}\n`;
+        taskStartText += `*Screenshots Required:* ${task.screenshotCount || 1}\n\n`;
+        taskStartText += `*Please follow these steps:*\n`;
+        taskStartText += `1. Complete the task as described\n`;
+        taskStartText += `2. Take screenshots as proof\n`;
+        taskStartText += `3. Upload each screenshot when prompted\n\n`;
+        taskStartText += `*Note:* Make sure screenshots clearly show task completion.\n`;
+        taskStartText += `Type "cancel" to cancel at any time.\n\n`;
+        taskStartText += `Ready to upload screenshot 1/${task.screenshotCount || 1}?`;
+        
+        const keyboard = [
+            [{ text: '📸 Upload Screenshot 1', callback_data: 'upload_screenshot_1' }],
+            [{ text: '🚫 Cancel Task', callback_data: 'cancel_task' }]
+        ];
+        
+        await safeEditMessage(ctx, taskStartText, {
+            parse_mode: 'HTML',
+            reply_markup: { inline_keyboard: keyboard }
+        });
+        
+    } catch (error) {
+        console.error('Start task error:', error);
+        await ctx.answerCbQuery('❌ Error starting task');
+    }
+});
+
+// Upload Screenshot
+bot.action(/^upload_screenshot_(\d+)$/, async (ctx) => {
+    try {
+        const screenshotNum = parseInt(ctx.match[1]);
+        const taskSubmission = ctx.session.taskSubmission;
+        
+        if (!taskSubmission) {
+            await ctx.answerCbQuery('❌ Session expired');
+            return;
+        }
+        
+        if (screenshotNum > taskSubmission.screenshotCount) {
+            await ctx.answerCbQuery('❌ Invalid screenshot number');
+            return;
+        }
+        
+        taskSubmission.currentScreenshot = screenshotNum;
+        
+        const label = taskSubmission.screenshotLabels[screenshotNum - 1] || `Screenshot ${screenshotNum}`;
+        
+        let uploadText = `📸 *Upload ${label}*\n\n`;
+        uploadText += `Task: ${taskSubmission.taskTitle}\n`;
+        uploadText += `Progress: ${screenshotNum}/${taskSubmission.screenshotCount}\n\n`;
+        uploadText += `Please send the screenshot now.\n`;
+        uploadText += `Make sure it clearly shows task completion.\n\n`;
+        uploadText += `Type "cancel" to cancel the task.`;
+        
+        await safeEditMessage(ctx, uploadText, {
+            parse_mode: 'HTML'
+        });
+        
+        // Enter task submission scene
+        await ctx.scene.enter('task_submission_scene');
+        
+    } catch (error) {
+        console.error('Upload screenshot error:', error);
+        await ctx.answerCbQuery('❌ Error preparing screenshot upload');
+    }
+});
+
+// Cancel Task
+bot.action('cancel_task', async (ctx) => {
+    try {
+        delete ctx.session.taskSubmission;
+        await safeSendMessage(ctx, '❌ Task submission cancelled.');
+        await showMainMenu(ctx);
+    } catch (error) {
+        console.error('Cancel task error:', error);
+    }
+});
+
+// Task Submission Scene
+scenes.taskSubmission.on(['photo', 'text'], async (ctx) => {
+    try {
+        const taskSubmission = ctx.session.taskSubmission;
+        
+        if (!taskSubmission) {
+            await safeSendMessage(ctx, '❌ Session expired. Please start again.');
+            await ctx.scene.leave();
+            return;
+        }
+        
+        if (ctx.message.text && ctx.message.text.toLowerCase() === 'cancel') {
+            delete ctx.session.taskSubmission;
+            await safeSendMessage(ctx, '❌ Task submission cancelled.');
+            await ctx.scene.leave();
+            await showMainMenu(ctx);
+            return;
+        }
+        
+        if (!ctx.message.photo) {
+            await safeSendMessage(ctx, '❌ Please send a screenshot photo.\n\nType "cancel" to cancel.');
+            return;
+        }
+        
+        const photo = ctx.message.photo[ctx.message.photo.length - 1];
+        const fileLink = await ctx.telegram.getFileLink(photo.file_id);
+        
+        // Store screenshot
+        taskSubmission.screenshots.push({
+            number: taskSubmission.currentScreenshot,
+            url: fileLink.href,
+            fileId: photo.file_id
+        });
+        
+        // Check if all screenshots uploaded
+        if (taskSubmission.currentScreenshot >= taskSubmission.screenshotCount) {
+            // All screenshots uploaded, submit task
+            await submitTaskCompletion(ctx);
+        } else {
+            // Ask for next screenshot
+            taskSubmission.currentScreenshot++;
+            const nextNum = taskSubmission.currentScreenshot;
+            const label = taskSubmission.screenshotLabels[nextNum - 1] || `Screenshot ${nextNum}`;
+            
+            let nextText = `✅ *Screenshot ${nextNum - 1} uploaded successfully!*\n\n`;
+            nextText += `Ready to upload ${label} (${nextNum}/${taskSubmission.screenshotCount})?\n\n`;
+            nextText += `Type "cancel" to cancel.`;
+            
+            const keyboard = [
+                [{ text: `📸 Upload ${label}`, callback_data: `upload_screenshot_${nextNum}` }],
+                [{ text: '🚫 Cancel Task', callback_data: 'cancel_task' }]
+            ];
+            
+            await safeSendMessage(ctx, nextText, {
+                parse_mode: 'HTML',
+                reply_markup: { inline_keyboard: keyboard }
+            });
+            
+            await ctx.scene.leave();
+        }
+        
+    } catch (error) {
+        console.error('Task submission scene error:', error);
+        await safeSendMessage(ctx, '❌ Error uploading screenshot. Please try again.');
+        await ctx.scene.leave();
+    }
+});
+
+async function submitTaskCompletion(ctx) {
+    try {
+        const userId = ctx.from.id;
+        const taskSubmission = ctx.session.taskSubmission;
+        
+        if (!taskSubmission) {
+            await safeSendMessage(ctx, '❌ Session expired');
+            return;
+        }
+        
+        const task = await db.collection('tasks').findOne({ taskId: taskSubmission.taskId });
+        
+        if (!task) {
+            await safeSendMessage(ctx, '❌ Task not found');
+            delete ctx.session.taskSubmission;
+            return;
+        }
+        
+        // Create submission
+        const submissionId = generateSubmissionId();
+        const submission = {
+            submissionId: submissionId,
+            userId: userId,
+            taskId: taskSubmission.taskId,
+            taskTitle: taskSubmission.taskTitle,
+            screenshots: taskSubmission.screenshots.map(s => s.url),
+            status: 'pending',
+            bonusAmount: task.bonusAmount,
+            submittedAt: new Date(),
+            userInfo: {
+                firstName: ctx.from.first_name || '',
+                lastName: ctx.from.last_name || '',
+                username: ctx.from.username || ''
+            }
+        };
+        
+        await db.collection('tasksubmissions').insertOne(submission);
+        
+        // Clear session
+        delete ctx.session.taskSubmission;
+        
+        // Prepare success message
+        let successText = `✅ *Task Submitted Successfully!*\n\n`;
+        successText += `📋 *Task:* ${taskSubmission.taskTitle}\n`;
+        successText += `🎫 *Submission ID:* \`${submissionId}\`\n`;
+        successText += `💰 *Reward:* ${formatCurrency(task.bonusAmount)}\n`;
+        successText += `📅 *Submitted:* ${new Date().toLocaleString()}\n\n`;
+        successText += `*Status:* ⏳ Pending Review\n\n`;
+        successText += `Your submission has been sent to admin for review.\n`;
+        successText += `You will be notified once it's approved.`;
+        
+        const keyboard = [
+            [{ text: '📋 View Other Tasks', callback_data: 'user_tasks' }],
+            [{ text: '🔙 Back to Menu', callback_data: 'back_to_menu' }]
+        ];
+        
+        await safeSendMessage(ctx, successText, {
+            parse_mode: 'HTML',
+            reply_markup: { inline_keyboard: keyboard }
+        });
+        
+        await ctx.scene.leave();
+        
+        // Notify admins
+        const userLink = ctx.from.username ? `@${ctx.from.username}` : ctx.from.first_name || 'User';
+        const adminNotification = `📋 *New Task Submission*\n\n`;
+        adminNotification += `🎫 *Submission ID:* \`${submissionId}\`\n`;
+        adminNotification += `👤 *User:* ${userLink}\n`;
+        adminNotification += `🆔 *User ID:* \`${userId}\`\n`;
+        adminNotification += `📋 *Task:* ${taskSubmission.taskTitle}\n`;
+        adminNotification += `💰 *Reward:* ${formatCurrency(task.bonusAmount)}\n`;
+        adminNotification += `📅 *Time:* ${new Date().toLocaleString()}\n\n`;
+        adminNotification += `Click below to review:`;
+        
         const activeAdmins = await getActiveAdmins();
-        const promises = activeAdmins.map(async (adminId) => {
+        const notifyPromises = activeAdmins.map(async (adminId) => {
             try {
-                await bot.telegram.sendMessage(
-                    adminId,
-                    errorReport + `\n\n<pre>Click below to reply:</pre>`,
-                    {
-                        parse_mode: 'HTML',
-                        reply_markup: {
-                            inline_keyboard: [[
-                                { text: '💬 Reply to User', callback_data: `contact_user_${user.id}` }
-                            ]]
-                        }
+                await bot.telegram.sendMessage(adminId, adminNotification, {
+                    parse_mode: 'HTML',
+                    reply_markup: {
+                        inline_keyboard: [[
+                            { text: '✅ Review Submission', callback_data: `review_submission_${submissionId}` }
+                        ]]
                     }
-                );
+                });
             } catch (error) {
                 console.error(`Failed to notify admin ${adminId}:`, error.message);
             }
         });
         
-        await Promise.allSettled(promises);
+        await Promise.allSettled(notifyPromises);
         
-        await safeSendMessage(ctx, '✅ Message sent to admin team! They will respond soon.', {
+    } catch (error) {
+        console.error('Submit task completion error:', error);
+        await safeSendMessage(ctx, '❌ Error submitting task. Please try again.');
+        await ctx.scene.leave();
+    }
+}
+
+// Task History
+bot.action('task_history', async (ctx) => {
+    try {
+        const userId = ctx.from.id;
+        const page = ctx.session?.taskHistoryPage || 1;
+        const limit = 10;
+        
+        const totalSubmissions = await db.collection('tasksubmissions').countDocuments({ userId: userId });
+        const totalPages = Math.ceil(totalSubmissions / limit);
+        const skip = (page - 1) * limit;
+        
+        const submissions = await db.collection('tasksubmissions')
+            .find({ userId: userId })
+            .sort({ submittedAt: -1 })
+            .skip(skip)
+            .limit(limit)
+            .toArray();
+        
+        let historyText = `📊 *Task History*\n\n`;
+        historyText += `Page ${page} of ${totalPages}\n`;
+        historyText += `Total Submissions: ${totalSubmissions}\n\n`;
+        
+        if (submissions.length === 0) {
+            historyText += `No task submissions found.\n`;
+        } else {
+            historyText += `*Submission History:*\n\n`;
+            
+            for (let i = 0; i < submissions.length; i++) {
+                const submission = submissions[i];
+                const index = skip + i + 1;
+                const date = new Date(submission.submittedAt).toLocaleDateString();
+                const statusEmoji = submission.status === 'approved' ? '✅' : 
+                                   submission.status === 'rejected' ? '❌' : '⏳';
+                
+                historyText += `${index}. *${submission.taskTitle}*\n`;
+                historyText += `   ID: \`${submission.submissionId}\`\n`;
+                historyText += `   Status: ${statusEmoji} ${submission.status}\n`;
+                historyText += `   Reward: ${formatCurrency(submission.bonusAmount)}\n`;
+                historyText += `   Date: ${date}\n`;
+                
+                if (submission.status === 'approved' && submission.approvedAt) {
+                    historyText += `   Approved: ${new Date(submission.approvedAt).toLocaleDateString()}\n`;
+                }
+                if (submission.status === 'rejected' && submission.adminMessage) {
+                    historyText += `   Reason: ${submission.adminMessage}\n`;
+                }
+                historyText += `\n`;
+            }
+        }
+        
+        const keyboard = [];
+        
+        // Navigation buttons
+        if (totalPages > 1) {
+            const navRow = [];
+            if (page > 1) {
+                navRow.push({ text: '◀️ Previous', callback_data: `task_history_page_${page - 1}` });
+            }
+            navRow.push({ text: `📄 ${page}/${totalPages}`, callback_data: 'no_action' });
+            if (page < totalPages) {
+                navRow.push({ text: 'Next ▶️', callback_data: `task_history_page_${page + 1}` });
+            }
+            keyboard.push(navRow);
+        }
+        
+        keyboard.push(
+            [{ text: '📋 Available Tasks', callback_data: 'user_tasks' }],
+            [{ text: '🔙 Back to Menu', callback_data: 'back_to_menu' }]
+        );
+        
+        await safeEditMessage(ctx, historyText, {
+            parse_mode: 'HTML',
+            reply_markup: { inline_keyboard: keyboard }
+        });
+        
+    } catch (error) {
+        console.error('Task history error:', error);
+        await ctx.answerCbQuery('❌ Error loading task history');
+    }
+});
+
+// Task History Pagination
+bot.action(/^task_history_page_(\d+)$/, async (ctx) => {
+    try {
+        const page = parseInt(ctx.match[1]);
+        ctx.session.taskHistoryPage = page;
+        await bot.action('task_history')(ctx);
+    } catch (error) {
+        console.error('Task history pagination error:', error);
+    }
+});
+
+// ==========================================
+// USER FEATURES - CONTACT SUPPORT
+// ==========================================
+
+bot.action('contact_support', async (ctx) => {
+    try {
+        const user = ctx.from;
+        const userInfo = user.username ? `@${user.username}` : user.first_name || `User ${user.id}`;
+        
+        let contactText = `📞 *Contact Support*\n\n`;
+        contactText += `If you have any questions, issues, or need assistance, our support team is here to help!\n\n`;
+        contactText += `*How to contact:*\n`;
+        contactText += `1. Send your message directly\n`;
+        contactText += `2. Include details about your issue\n`;
+        contactText += `3. Attach screenshots if needed\n`;
+        contactText += `4. Our team will respond as soon as possible\n\n`;
+        contactText += `*Note:* For faster response, please be clear and provide all necessary information.\n\n`;
+        contactText += `Type your message below:\n`;
+        contactText += `Type "cancel" to cancel.`;
+        
+        await ctx.deleteMessage().catch(() => {});
+        await safeSendMessage(ctx, contactText, {
+            parse_mode: 'HTML',
             reply_markup: {
                 inline_keyboard: [[
                     { text: '🔙 Back to Menu', callback_data: 'back_to_menu' }
@@ -2325,38 +2904,119 @@ bot.hears('📞 Contact Admin', async (ctx) => {
             }
         });
         
+        await ctx.scene.enter('contact_user_message_scene');
+        
     } catch (error) {
-        console.error('Contact admin error:', error);
-        await safeSendMessage(ctx, '❌ Failed to contact admin.');
+        console.error('Contact support error:', error);
+        await ctx.answerCbQuery('❌ Error loading contact form');
     }
 });
 
-// Back to Menu from inline buttons
-bot.action('back_to_menu', async (ctx) => {
+// Contact User Message Scene (for users contacting support)
+scenes.contactUserMessage.on(['text', 'photo', 'document'], async (ctx) => {
     try {
-        await ctx.deleteMessage().catch(() => {});
-        await showMainMenu(ctx);
+        const user = ctx.from;
+        const userInfo = user.username ? `@${user.username}` : user.first_name || `User ${user.id}`;
+        
+        if (ctx.message.text?.toLowerCase() === 'cancel') {
+            await safeSendMessage(ctx, '❌ Contact cancelled.');
+            await ctx.scene.leave();
+            await showMainMenu(ctx);
+            return;
+        }
+        
+        // Prepare message for admin
+        let adminMessage = `📞 *New Support Request*\n\n`;
+        adminMessage += `👤 *User:* ${userInfo}\n`;
+        adminMessage += `🆔 *User ID:* \`${user.id}\`\n`;
+        adminMessage += `📅 *Time:* ${new Date().toLocaleString()}\n\n`;
+        
+        if (ctx.message.text) {
+            adminMessage += `*Message:*\n${ctx.message.text}\n\n`;
+        } else if (ctx.message.caption) {
+            adminMessage += `*Message:*\n${ctx.message.caption}\n\n`;
+        } else {
+            adminMessage += `*Message:* [Media file attached]\n\n`;
+        }
+        
+        adminMessage += `Click below to reply:`;
+        
+        // Send to admins
+        const activeAdmins = await getActiveAdmins();
+        const notifyPromises = activeAdmins.map(async (adminId) => {
+            try {
+                if (ctx.message.photo) {
+                    await bot.telegram.sendPhoto(
+                        adminId,
+                        ctx.message.photo[ctx.message.photo.length - 1].file_id,
+                        {
+                            caption: adminMessage,
+                            parse_mode: 'HTML',
+                            reply_markup: {
+                                inline_keyboard: [[
+                                    { text: '💬 Reply to User', callback_data: `contact_user_${user.id}` }
+                                ]]
+                            }
+                        }
+                    );
+                } else if (ctx.message.document) {
+                    await bot.telegram.sendDocument(
+                        adminId,
+                        ctx.message.document.file_id,
+                        {
+                            caption: adminMessage,
+                            parse_mode: 'HTML',
+                            reply_markup: {
+                                inline_keyboard: [[
+                                    { text: '💬 Reply to User', callback_data: `contact_user_${user.id}` }
+                                ]]
+                            }
+                        }
+                    );
+                } else if (ctx.message.text) {
+                    await bot.telegram.sendMessage(
+                        adminId,
+                        adminMessage,
+                        {
+                            parse_mode: 'HTML',
+                            reply_markup: {
+                                inline_keyboard: [[
+                                    { text: '💬 Reply to User', callback_data: `contact_user_${user.id}` }
+                                ]]
+                            }
+                        }
+                    );
+                }
+            } catch (error) {
+                console.error(`Failed to notify admin ${adminId}:`, error.message);
+            }
+        });
+        
+        await Promise.allSettled(notifyPromises);
+        
+        // Confirm to user
+        await safeSendMessage(ctx, '✅ *Message sent to support team!*\n\nWe will get back to you as soon as possible.', {
+            parse_mode: 'HTML',
+            reply_markup: {
+                inline_keyboard: [[
+                    { text: '🔙 Back to Menu', callback_data: 'back_to_menu' }
+                ]]
+            }
+        });
+        
+        await ctx.scene.leave();
+        
     } catch (error) {
-        console.error('Back to menu error:', error);
-        await ctx.answerCbQuery('❌ Error');
-    }
-});
-
-// Back to Tasks
-bot.action('back_to_tasks', async (ctx) => {
-    try {
-        await ctx.deleteMessage().catch(() => {});
-        await bot.hears('📋 Tasks')(ctx);
-    } catch (error) {
-        console.error('Back to tasks error:', error);
+        console.error('Contact user message scene error:', error);
+        await safeSendMessage(ctx, '❌ Error sending message. Please try again.');
+        await ctx.scene.leave();
     }
 });
 
 // ==========================================
-// ADMIN PANEL
+// ADMIN PANEL - MAIN MENU
 // ==========================================
 
-// Admin command
 bot.command('admin', async (ctx) => {
     try {
         const args = ctx.message.text.split(' ');
@@ -2365,25 +3025,23 @@ bot.command('admin', async (ctx) => {
             // Admin code verification
             const adminCode = args[1];
             const config = await db.collection('admin').findOne({ type: 'config' });
+            const validAdminCode = config?.adminCode || ADMIN_CODE;
             
-            if (config?.adminCode === adminCode) {
+            if (adminCode === validAdminCode) {
                 // Add user as admin
-                const newAdminId = ctx.from.id;
-                const currentAdmins = config.admins || ADMIN_IDS;
+                const userId = ctx.from.id;
+                const currentAdmins = config?.admins || ADMIN_IDS;
                 
-                if (!currentAdmins.includes(newAdminId)) {
-                    const updatedAdmins = [...currentAdmins, newAdminId];
+                if (!currentAdmins.includes(userId)) {
+                    const updatedAdmins = [...currentAdmins, userId];
                     await db.collection('admin').updateOne(
                         { type: 'config' },
                         { $set: { admins: updatedAdmins, updatedAt: new Date() } }
                     );
                     
-                    await safeSendMessage(ctx, `✅ You have been added as admin!\n\nYour ID: <code>${newAdminId}</code>\n\nUse /admin to access admin panel.`, {
+                    await safeSendMessage(ctx, `✅ *You are now an admin!*\n\nWelcome to the admin panel.`, {
                         parse_mode: 'HTML'
                     });
-                    
-                    // Notify other admins
-                    await notifyAdmin(`👑 <b>New Admin Added via Code</b>\n\n👤 User: ${ctx.from.first_name || 'Unknown'}\n🆔 ID: <code>${newAdminId}</code>\n📝 Username: ${ctx.from.username ? '@' + ctx.from.username : 'None'}`);
                 }
             } else {
                 await safeSendMessage(ctx, '❌ Invalid admin code.');
@@ -2396,48 +3054,404 @@ bot.command('admin', async (ctx) => {
         }
         
         await showAdminPanel(ctx);
+        
     } catch (error) {
         console.error('Admin command error:', error);
-        await safeSendMessage(ctx, '❌ An error occurred.');
+        await safeSendMessage(ctx, '❌ An error occurred. Please try again.');
     }
 });
 
-// Show Admin Panel
 async function showAdminPanel(ctx) {
     try {
-        const text = '👮‍♂️ <b>Admin Control Panel</b>\n\nSelect a category:';
+        const text = '👮‍♂️ *Admin Control Panel*\n\nSelect a category:';
         
         const keyboard = [
-            // Row 1
-            [{ text: '📢 Broadcast', callback_data: 'admin_broadcast' }, { text: '👥 User Stats', callback_data: 'admin_userstats' }],
-            // Row 2
-            [{ text: '🖼️ Start Image', callback_data: 'admin_startimage' }, { text: '📝 Start Message', callback_data: 'admin_startmessage' }],
-            [{ text: '🖼️ Menu Image', callback_data: 'admin_menuimage' }, { text: '📝 Menu Message', callback_data: 'admin_menumessage' }],
-            // Row 3
-            [{ text: '🎫 Gift Codes', callback_data: 'admin_giftcodes_menu' }, { text: '🎁 Bonus', callback_data: 'admin_bonus_menu' }],
-            [{ text: '📺 Channels', callback_data: 'admin_channels_menu' }, { text: '👑 Admins', callback_data: 'admin_admins_menu' }],
-            // Row 4
-            [{ text: '📋 Tasks', callback_data: 'admin_tasks_menu' }, { text: '💰 Withdrawals', callback_data: 'admin_withdrawals_menu' }],
-            [{ text: '⚙️ Settings', callback_data: 'admin_settings_menu' }, { text: '🗑️ Data', callback_data: 'admin_data_menu' }]
+            // Row 1: Broadcasting & Users
+            [
+                { text: '📢 Broadcast', callback_data: 'admin_broadcast' },
+                { text: '👥 User Stats', callback_data: 'admin_userstats' }
+            ],
+            
+            // Row 2: Content Management
+            [
+                { text: '📝 Messages', callback_data: 'admin_messages_menu' },
+                { text: '🖼️ Images', callback_data: 'admin_images_menu' }
+            ],
+            
+            // Row 3: Earning Features
+            [
+                { text: '💰 Earnings', callback_data: 'admin_earnings_menu' },
+                { text: '📋 Tasks', callback_data: 'admin_tasks_menu' }
+            ],
+            
+            // Row 4: Channel Management
+            [
+                { text: '📺 Channels', callback_data: 'admin_channels_menu' },
+                { text: '👑 Admins', callback_data: 'admin_admins_menu' }
+            ],
+            
+            // Row 5: System Settings
+            [
+                { text: '⚙️ Settings', callback_data: 'admin_settings_menu' },
+                { text: '📊 Statistics', callback_data: 'admin_statistics' }
+            ],
+            
+            // Row 6: Tools & Utilities
+            [
+                { text: '🛠️ Tools', callback_data: 'admin_tools_menu' },
+                { text: '🚨 Alerts', callback_data: 'admin_alerts_menu' }
+            ]
         ];
         
-        await safeSendMessage(ctx, text, {
-            reply_markup: { inline_keyboard: keyboard }
-        });
+        if (ctx.callbackQuery) {
+            await safeEditMessage(ctx, text, {
+                parse_mode: 'HTML',
+                reply_markup: { inline_keyboard: keyboard }
+            });
+        } else {
+            await safeSendMessage(ctx, text, {
+                parse_mode: 'HTML',
+                reply_markup: { inline_keyboard: keyboard }
+            });
+        }
     } catch (error) {
         console.error('Show admin panel error:', error);
-        await safeSendMessage(ctx, '❌ An error occurred.');
+        await safeSendMessage(ctx, '❌ An error occurred. Please try again.');
     }
 }
 
+// Back to Admin Panel
+bot.action('admin_back', async (ctx) => {
+    try {
+        await showAdminPanel(ctx);
+    } catch (error) {
+        console.error('Back to admin error:', error);
+    }
+});
+
 // ==========================================
-// ADMIN - BROADCAST
+// ADMIN SUB-MENUS
+// ==========================================
+
+// Messages Menu
+bot.action('admin_messages_menu', async (ctx) => {
+    const text = '📝 *Messages Management*\n\nSelect an option:';
+    
+    const keyboard = [
+        [
+            { text: '🖼️ Start Message', callback_data: 'admin_startmessage' },
+            { text: '🎮 Menu Message', callback_data: 'admin_menumessage' }
+        ],
+        [
+            { text: '📋 HTML Guide', callback_data: 'admin_html_guide' }
+        ],
+        [
+            { text: '🔙 Back', callback_data: 'admin_back' }
+        ]
+    ];
+    
+    await safeEditMessage(ctx, text, {
+        parse_mode: 'HTML',
+        reply_markup: { inline_keyboard: keyboard }
+    });
+});
+
+// Images Menu
+bot.action('admin_images_menu', async (ctx) => {
+    const text = '🖼️ *Images Management*\n\nSelect an option:';
+    
+    const keyboard = [
+        [
+            { text: '🖼️ Start Image', callback_data: 'admin_startimage' },
+            { text: '🎮 Menu Image', callback_data: 'admin_menuimage' }
+        ],
+        [
+            { text: '🎁 Bonus Image', callback_data: 'admin_bonusimage' }
+        ],
+        [
+            { text: '⚙️ Image Overlay', callback_data: 'admin_image_overlay' },
+            { text: '📁 Manage Images', callback_data: 'admin_manage_images' }
+        ],
+        [
+            { text: '🔙 Back', callback_data: 'admin_back' }
+        ]
+    ];
+    
+    await safeEditMessage(ctx, text, {
+        parse_mode: 'HTML',
+        reply_markup: { inline_keyboard: keyboard }
+    });
+});
+
+// Earnings Menu
+bot.action('admin_earnings_menu', async (ctx) => {
+    const text = '💰 *Earnings Management*\n\nSelect an option:';
+    
+    const keyboard = [
+        [
+            { text: '🎫 Gift Codes', callback_data: 'admin_giftcodes_menu' },
+            { text: '🎁 Bonus', callback_data: 'admin_bonus_menu' }
+        ],
+        [
+            { text: '📤 Referral', callback_data: 'admin_referral_menu' },
+            { text: '💳 Withdrawal', callback_data: 'admin_withdrawal_menu' }
+        ],
+        [
+            { text: '🔙 Back', callback_data: 'admin_back' }
+        ]
+    ];
+    
+    await safeEditMessage(ctx, text, {
+        parse_mode: 'HTML',
+        reply_markup: { inline_keyboard: keyboard }
+    });
+});
+
+// Tasks Menu
+bot.action('admin_tasks_menu', async (ctx) => {
+    const text = '📋 *Tasks Management*\n\nSelect an option:';
+    
+    const keyboard = [
+        [
+            { text: '➕ Add Task', callback_data: 'admin_add_task' },
+            { text: '📋 Manage Tasks', callback_data: 'admin_manage_tasks' }
+        ],
+        [
+            { text: '✅ Task Requests', callback_data: 'admin_task_requests' },
+            { text: '📊 Task History', callback_data: 'admin_task_history' }
+        ],
+        [
+            { text: '🔙 Back', callback_data: 'admin_back' }
+        ]
+    ];
+    
+    await safeEditMessage(ctx, text, {
+        parse_mode: 'HTML',
+        reply_markup: { inline_keyboard: keyboard }
+    });
+});
+
+// Channels Menu
+bot.action('admin_channels_menu', async (ctx) => {
+    const text = '📺 *Channels Management*\n\nSelect an option:';
+    
+    const keyboard = [
+        [
+            { text: '➕ Add Channel', callback_data: 'admin_add_channel' },
+            { text: '📋 Manage Channels', callback_data: 'admin_channels' }
+        ],
+        [
+            { text: '🔄 Reorder Channels', callback_data: 'admin_reorder_channels' },
+            { text: '✏️ Edit Channels', callback_data: 'admin_edit_channels' }
+        ],
+        [
+            { text: '👁️ Channel Levels', callback_data: 'admin_channel_levels' }
+        ],
+        [
+            { text: '🔙 Back', callback_data: 'admin_back' }
+        ]
+    ];
+    
+    await safeEditMessage(ctx, text, {
+        parse_mode: 'HTML',
+        reply_markup: { inline_keyboard: keyboard }
+    });
+});
+
+// Admins Menu
+bot.action('admin_admins_menu', async (ctx) => {
+    const text = '👑 *Admins Management*\n\nSelect an option:';
+    
+    const keyboard = [
+        [
+            { text: '➕ Add Admin', callback_data: 'admin_add_admin' },
+            { text: '📋 Manage Admins', callback_data: 'admin_manage_admins' }
+        ],
+        [
+            { text: '🔐 Admin Code', callback_data: 'admin_code_settings' }
+        ],
+        [
+            { text: '🔙 Back', callback_data: 'admin_back' }
+        ]
+    ];
+    
+    await safeEditMessage(ctx, text, {
+        parse_mode: 'HTML',
+        reply_markup: { inline_keyboard: keyboard }
+    });
+});
+
+// Settings Menu
+bot.action('admin_settings_menu', async (ctx) => {
+    const text = '⚙️ *System Settings*\n\nSelect an option:';
+    
+    const keyboard = [
+        [
+            { text: '⏰ Timer', callback_data: 'admin_timer' },
+            { text: '📞 Contact Button', callback_data: 'admin_contact_button' }
+        ],
+        [
+            { text: '🚫 Disable Bot', callback_data: 'admin_disable_bot' },
+            { text: '🔄 Auto Accept', callback_data: 'admin_auto_accept' }
+        ],
+        [
+            { text: '🔕 Mute Notifications', callback_data: 'admin_mute_notifications' }
+        ],
+        [
+            { text: '🔙 Back', callback_data: 'admin_back' }
+        ]
+    ];
+    
+    await safeEditMessage(ctx, text, {
+        parse_mode: 'HTML',
+        reply_markup: { inline_keyboard: keyboard }
+    });
+});
+
+// Tools Menu
+bot.action('admin_tools_menu', async (ctx) => {
+    const text = '🛠️ *Admin Tools*\n\nSelect an option:';
+    
+    const keyboard = [
+        [
+            { text: '🗑️ Delete Data', callback_data: 'admin_deletedata' },
+            { text: '🔄 Reset Errors', callback_data: 'admin_reset_errors' }
+        ],
+        [
+            { text: '🔍 Search Users', callback_data: 'admin_search_users' },
+            { text: '🔍 Search Withdrawals', callback_data: 'admin_search_withdrawals' }
+        ],
+        [
+            { text: '🔙 Back', callback_data: 'admin_back' }
+        ]
+    ];
+    
+    await safeEditMessage(ctx, text, {
+        parse_mode: 'HTML',
+        reply_markup: { inline_keyboard: keyboard }
+    });
+});
+
+// Alerts Menu
+bot.action('admin_alerts_menu', async (ctx) => {
+    const text = '🚨 *Alerts & Notifications*\n\nSelect an option:';
+    
+    const keyboard = [
+        [
+            { text: '📊 User Joined', callback_data: 'admin_user_joined_alerts' },
+            { text: '✅ User Verified', callback_data: 'admin_user_verified_alerts' }
+        ],
+        [
+            { text: '💳 Withdrawal Request', callback_data: 'admin_withdrawal_alerts' },
+            { text: '📋 Task Submission', callback_data: 'admin_task_submission_alerts' }
+        ],
+        [
+            { text: '📞 Contact Message', callback_data: 'admin_contact_alerts' }
+        ],
+        [
+            { text: '🔙 Back', callback_data: 'admin_back' }
+        ]
+    ];
+    
+    await safeEditMessage(ctx, text, {
+        parse_mode: 'HTML',
+        reply_markup: { inline_keyboard: keyboard }
+    });
+});
+
+// Gift Codes Menu
+bot.action('admin_giftcodes_menu', async (ctx) => {
+    const text = '🎫 *Gift Codes Management*\n\nSelect an option:';
+    
+    const keyboard = [
+        [
+            { text: '➕ Create Gift Code', callback_data: 'admin_create_giftcode' },
+            { text: '📋 Manage Gift Codes', callback_data: 'admin_manage_giftcodes' }
+        ],
+        [
+            { text: '⚙️ Gift Code Settings', callback_data: 'admin_giftcode_settings' }
+        ],
+        [
+            { text: '🔙 Back', callback_data: 'admin_earnings_menu' }
+        ]
+    ];
+    
+    await safeEditMessage(ctx, text, {
+        parse_mode: 'HTML',
+        reply_markup: { inline_keyboard: keyboard }
+    });
+});
+
+// Bonus Menu
+bot.action('admin_bonus_menu', async (ctx) => {
+    const text = '🎁 *Bonus Management*\n\nSelect an option:';
+    
+    const keyboard = [
+        [
+            { text: '⚙️ Bonus Settings', callback_data: 'admin_bonus_settings' },
+            { text: '🖼️ Bonus Image', callback_data: 'admin_bonusimage' }
+        ],
+        [
+            { text: '🔙 Back', callback_data: 'admin_earnings_menu' }
+        ]
+    ];
+    
+    await safeEditMessage(ctx, text, {
+        parse_mode: 'HTML',
+        reply_markup: { inline_keyboard: keyboard }
+    });
+});
+
+// Referral Menu
+bot.action('admin_referral_menu', async (ctx) => {
+    const text = '📤 *Referral Management*\n\nSelect an option:';
+    
+    const keyboard = [
+        [
+            { text: '⚙️ Referral Settings', callback_data: 'admin_referral_settings' }
+        ],
+        [
+            { text: '🔙 Back', callback_data: 'admin_earnings_menu' }
+        ]
+    ];
+    
+    await safeEditMessage(ctx, text, {
+        parse_mode: 'HTML',
+        reply_markup: { inline_keyboard: keyboard }
+    });
+});
+
+// Withdrawal Menu
+bot.action('admin_withdrawal_menu', async (ctx) => {
+    const text = '💳 *Withdrawal Management*\n\nSelect an option:';
+    
+    const keyboard = [
+        [
+            { text: '📋 Withdrawal Requests', callback_data: 'admin_withdrawal_requests' },
+            { text: '📊 Withdrawal History', callback_data: 'admin_withdrawal_history' }
+        ],
+        [
+            { text: '⚙️ Withdrawal Settings', callback_data: 'admin_withdrawal_settings' }
+        ],
+        [
+            { text: '🔙 Back', callback_data: 'admin_earnings_menu' }
+        ]
+    ];
+    
+    await safeEditMessage(ctx, text, {
+        parse_mode: 'HTML',
+        reply_markup: { inline_keyboard: keyboard }
+    });
+});
+
+// ==========================================
+// ADMIN FEATURES - BROADCAST
 // ==========================================
 
 bot.action('admin_broadcast', async (ctx) => {
     if (!await isAdmin(ctx.from.id)) return;
     
-    await safeEditMessage(ctx, '📢 <b>Broadcast Message</b>\n\nSend the message you want to broadcast to all users.\n\n<i>Supports HTML formatting</i>\n\nType "cancel" to cancel.', {
+    await safeEditMessage(ctx, '📢 *Broadcast Message*\n\nSend the message you want to broadcast to all users.\n\nSupports HTML formatting.\n\nType "cancel" to cancel.', {
         parse_mode: 'HTML'
     });
     await ctx.scene.enter('broadcast_scene');
@@ -2460,7 +3474,7 @@ scenes.broadcast.on('message', async (ctx) => {
         await safeSendMessage(ctx, `🚀 Broadcasting to ${totalUsers} users...`);
         
         // Notify admins about broadcast start
-        await notifyAdmin(`📢 <b>Broadcast Started</b>\n\n👤 Admin: ${ctx.from.id}\n👥 Target: ${totalUsers} users\n⏰ Time: ${new Date().toLocaleString()}`);
+        await notifyAdmin(`📢 *Broadcast Started*\n\n👤 Admin: ${ctx.from.id}\n👥 Target: ${totalUsers} users\n⏰ Time: ${new Date().toLocaleString()}`);
         
         const broadcastPromises = users.map(async (user) => {
             try {
@@ -2505,12 +3519,12 @@ scenes.broadcast.on('message', async (ctx) => {
         }
         
         await safeSendMessage(ctx,
-            `✅ <b>Broadcast Complete</b>\n\n📊 <b>Statistics:</b>\n• Total: ${totalUsers}\n• ✅ Successful: ${successful}\n• ❌ Failed: ${failed}`,
+            `✅ *Broadcast Complete*\n\n📊 *Statistics:*\n• Total: ${totalUsers}\n• ✅ Successful: ${successful}\n• ❌ Failed: ${failed}`,
             { parse_mode: 'HTML' }
         );
         
-        // Notify admins about completion
-        await notifyAdmin(`✅ <b>Broadcast Complete</b>\n\n📊 Statistics:\n• Total: ${totalUsers}\n• ✅ Successful: ${successful}\n• ❌ Failed: ${failed}\n👤 Admin: ${ctx.from.id}`);
+        // Notify admins about broadcast completion
+        await notifyAdmin(`✅ *Broadcast Complete*\n\n📊 Statistics:\n• Total: ${totalUsers}\n• ✅ Successful: ${successful}\n• ❌ Failed: ${failed}\n👤 Admin: ${ctx.from.id}`);
         
     } catch (error) {
         console.error('Broadcast error:', error);
@@ -2522,7 +3536,7 @@ scenes.broadcast.on('message', async (ctx) => {
 });
 
 // ==========================================
-// ADMIN - USER STATS
+// ADMIN FEATURES - USER STATS WITH PAGINATION
 // ==========================================
 
 bot.action('admin_userstats', async (ctx) => {
@@ -2533,9 +3547,19 @@ bot.action('admin_userstats', async (ctx) => {
 
 async function showUserStatsPage(ctx, page) {
     try {
-        const userData = await getPaginatedUsers(page, 20);
-        const users = userData.users;
-        const totalUsers = userData.totalUsers;
+        const config = await db.collection('admin').findOne({ type: 'config' });
+        const usersPerPage = config?.displaySettings?.usersPerPage || 20;
+        
+        const skip = (page - 1) * usersPerPage;
+        const users = await db.collection('users')
+            .find({})
+            .sort({ joinedAt: -1 })
+            .skip(skip)
+            .limit(usersPerPage)
+            .toArray();
+        
+        const totalUsers = await db.collection('users').countDocuments();
+        const totalPages = Math.ceil(totalUsers / usersPerPage);
         
         // Count verified users
         const verifiedUsersCount = users.filter(u => u.joinedAll).length;
@@ -2545,17 +3569,14 @@ async function showUserStatsPage(ctx, page) {
         today.setHours(0, 0, 0, 0);
         const activeToday = users.filter(u => u.lastActive && new Date(u.lastActive) >= today).length;
         
-        let usersText = `<b>📊 User Statistics</b>\n\n`;
-        usersText += `• <b>Total Users:</b> ${totalUsers}\n`;
-        usersText += `• <b>Verified Users:</b> ${verifiedUsersCount}\n`;
-        usersText += `• <b>Active Today:</b> ${activeToday}\n\n`;
-        usersText += `<b>👥 Users (Page ${page}/${userData.totalPages}):</b>\n\n`;
+        let usersText = `📊 *User Statistics*\n\n`;
+        usersText += `• *Total Users:* ${totalUsers}\n`;
+        usersText += `• *Verified Users:* ${verifiedUsersCount}\n`;
+        usersText += `• *Active Today:* ${activeToday}\n\n`;
+        usersText += `👥 *Users (Page ${page}/${totalPages}):*\n\n`;
         
-        // Create keyboard with 2 users per row
+        // Create keyboard with 2 users per row (10 rows total for 20 users)
         const keyboard = [];
-        
-        // Add search button
-        keyboard.push([{ text: '🔍 Search Users', callback_data: 'search_users' }]);
         
         // Group users 2 per row
         for (let i = 0; i < users.length; i += 2) {
@@ -2563,20 +3584,20 @@ async function showUserStatsPage(ctx, page) {
             
             // First user in row
             const user1 = users[i];
-            const userNum1 = (page - 1) * 20 + i + 1;
-            const name1 = user1.firstName || `User ${user1.userId}`;
+            const userNum1 = skip + i + 1;
+            const user1Name = user1.username ? `@${user1.username}` : user1.firstName || `User ${user1.userId}`;
             row.push({ 
-                text: `${userNum1}. ${name1}`, 
+                text: `${userNum1}. ${user1Name.substring(0, 15)}`, 
                 callback_data: `user_detail_${user1.userId}` 
             });
             
             // Second user in row if exists
             if (i + 1 < users.length) {
                 const user2 = users[i + 1];
-                const userNum2 = (page - 1) * 20 + i + 2;
-                const name2 = user2.firstName || `User ${user2.userId}`;
+                const userNum2 = skip + i + 2;
+                const user2Name = user2.username ? `@${user2.username}` : user2.firstName || `User ${user2.userId}`;
                 row.push({ 
-                    text: `${userNum2}. ${name2}`, 
+                    text: `${userNum2}. ${user2Name.substring(0, 15)}`, 
                     callback_data: `user_detail_${user2.userId}` 
                 });
             }
@@ -2585,26 +3606,31 @@ async function showUserStatsPage(ctx, page) {
         }
         
         // Navigation buttons
-        if (userData.hasPrev || userData.hasNext) {
+        if (totalPages > 1) {
             const navRow = [];
-            if (userData.hasPrev) {
+            if (page > 1) {
                 navRow.push({ text: '◀️ Previous', callback_data: `users_page_${page - 1}` });
             }
-            navRow.push({ text: `📄 ${page}/${userData.totalPages}`, callback_data: 'no_action' });
-            if (userData.hasNext) {
+            navRow.push({ text: `📄 ${page}/${totalPages}`, callback_data: 'no_action' });
+            if (page < totalPages) {
                 navRow.push({ text: 'Next ▶️', callback_data: `users_page_${page + 1}` });
             }
             keyboard.push(navRow);
         }
         
+        // Add search button
+        keyboard.push([{ text: '🔍 Search Users', callback_data: 'admin_search_users' }]);
+        
         keyboard.push([{ text: '🔙 Back to Admin', callback_data: 'admin_back' }]);
         
         if (ctx.callbackQuery) {
             await safeEditMessage(ctx, usersText, {
+                parse_mode: 'HTML',
                 reply_markup: { inline_keyboard: keyboard }
             });
         } else {
             await safeSendMessage(ctx, usersText, {
+                parse_mode: 'HTML',
                 reply_markup: { inline_keyboard: keyboard }
             });
         }
@@ -2613,61 +3639,6 @@ async function showUserStatsPage(ctx, page) {
         await safeSendMessage(ctx, '❌ Failed to get user statistics.');
     }
 }
-
-// Search Users
-bot.action('search_users', async (ctx) => {
-    if (!await isAdmin(ctx.from.id)) return;
-    
-    await safeSendMessage(ctx, '🔍 <b>Search Users</b>\n\nEnter username, user ID, name, or refer code to search:\n\nType "cancel" to cancel.', {
-        parse_mode: 'HTML'
-    });
-    await ctx.scene.enter('search_users_scene');
-});
-
-scenes.searchUsers.on('text', async (ctx) => {
-    try {
-        if (ctx.message.text.toLowerCase() === 'cancel') {
-            await safeSendMessage(ctx, '❌ Search cancelled.');
-            await ctx.scene.leave();
-            await showAdminPanel(ctx);
-            return;
-        }
-        
-        const query = ctx.message.text.trim();
-        const users = await searchUsers(query);
-        
-        if (users.length === 0) {
-            await safeSendMessage(ctx, '❌ No users found matching your search.');
-            return;
-        }
-        
-        let searchText = `<b>🔍 Search Results</b>\n\nFound ${users.length} users:\n\n`;
-        
-        const keyboard = [];
-        
-        users.forEach((user, index) => {
-            const name = user.firstName || `User ${user.userId}`;
-            const status = user.joinedAll ? '✅' : '❌';
-            keyboard.push([{ 
-                text: `${index + 1}. ${status} ${name}`, 
-                callback_data: `user_detail_${user.userId}` 
-            }]);
-        });
-        
-        keyboard.push([{ text: '🔙 Back to User Stats', callback_data: 'admin_userstats' }]);
-        
-        await safeSendMessage(ctx, searchText, {
-            reply_markup: { inline_keyboard: keyboard }
-        });
-        
-        await ctx.scene.leave();
-        
-    } catch (error) {
-        console.error('Search users scene error:', error);
-        await safeSendMessage(ctx, '❌ Error searching users.');
-        await ctx.scene.leave();
-    }
-});
 
 // User detail view
 bot.action(/^user_detail_(\d+)$/, async (ctx) => {
@@ -2687,37 +3658,35 @@ bot.action(/^user_detail_(\d+)$/, async (ctx) => {
         const joinedAt = user.joinedAt ? new Date(user.joinedAt).toLocaleString() : 'Unknown';
         const lastActive = user.lastActive ? new Date(user.lastActive).toLocaleString() : 'Never';
         const isVerified = user.joinedAll ? '✅ Verified' : '❌ Not Verified';
+        const balance = formatCurrency(user.balance || 0);
+        const referrals = await db.collection('users').countDocuments({ referredBy: Number(userId) });
         const wallet = user.wallet || 'Not set';
+        const referCode = user.referCode || 'Not set';
         
-        // Get referral count
-        const referralCount = await db.collection('users').countDocuments({ referredBy: Number(userId) });
-        
-        let userDetail = `<b>👤 User Details</b>\n\n`;
-        userDetail += `• <b>ID:</b> <code>${userId}</code>\n`;
-        userDetail += `• <b>Username:</b> <code>${escapeMarkdown(username)}</code>\n`;
-        userDetail += `• <b>First Name:</b> <code>${escapeMarkdown(firstName)}</code>\n`;
-        userDetail += `• <b>Last Name:</b> <code>${escapeMarkdown(lastName)}</code>\n`;
-        userDetail += `• <b>Full Name:</b> <code>${escapeMarkdown(fullName)}</code>\n`;
-        userDetail += `• <b>Status:</b> ${isVerified}\n`;
-        userDetail += `• <b>Balance:</b> ${user.balance || 0} ₹\n`;
-        userDetail += `• <b>Wallet:</b> <code>${wallet}</code>\n`;
-        userDetail += `• <b>Refer Code:</b> <code>${user.referCode || 'N/A'}</code>\n`;
-        userDetail += `• <b>Referrals:</b> ${referralCount}\n`;
-        userDetail += `• <b>Referred By:</b> ${user.referredBy || 'None'}\n`;
-        userDetail += `• <b>Total Earned:</b> ${user.totalEarned || 0} ₹\n`;
-        userDetail += `• <b>Total Withdrawn:</b> ${user.totalWithdrawn || 0} ₹\n`;
-        userDetail += `• <b>Joined:</b> <code>${joinedAt}</code>\n`;
-        userDetail += `• <b>Last Active:</b> <code>${lastActive}</code>\n`;
+        let userDetail = `👤 *User Details*\n\n`;
+        userDetail += `• *ID:* \`${userId}\`\n`;
+        userDetail += `• *Username:* \`${username}\`\n`;
+        userDetail += `• *First Name:* \`${firstName}\`\n`;
+        userDetail += `• *Last Name:* \`${lastName}\`\n`;
+        userDetail += `• *Full Name:* \`${fullName}\`\n`;
+        userDetail += `• *Status:* ${isVerified}\n`;
+        userDetail += `• *Balance:* ${balance}\n`;
+        userDetail += `• *Referrals:* ${referrals}\n`;
+        userDetail += `• *Wallet:* \`${wallet}\`\n`;
+        userDetail += `• *Refer Code:* \`${referCode}\`\n`;
+        userDetail += `• *Joined:* \`${joinedAt}\`\n`;
+        userDetail += `• *Last Active:* \`${lastActive}\`\n`;
         
         const keyboard = [
-            [{ text: '💬 Send Message/Photo', callback_data: `contact_user_${userId}` }],
-            [{ text: '💰 Add Balance', callback_data: `add_balance_${userId}` }, { text: '💰 Deduct Balance', callback_data: `deduct_balance_${userId}` }],
-            [{ text: '📊 Transactions', callback_data: `user_transactions_${userId}` }],
+            [{ text: '💬 Send Message', callback_data: `contact_user_${userId}` }],
+            [{ text: '💰 Adjust Balance', callback_data: `adjust_balance_${userId}` }],
+            [{ text: '📊 Transactions', callback_data: `view_user_transactions_${userId}` }],
             [{ text: '🔙 Back to Users', callback_data: 'admin_userstats' }],
             [{ text: '🔙 Back to Admin', callback_data: 'admin_back' }]
         ];
         
         await safeEditMessage(ctx, userDetail, {
+            parse_mode: 'HTML',
             reply_markup: { inline_keyboard: keyboard }
         });
     } catch (error) {
@@ -2734,91 +3703,121 @@ bot.action(/^users_page_(\d+)$/, async (ctx) => {
     await showUserStatsPage(ctx, page);
 });
 
-// ==========================================
-// ADMIN - START IMAGE & MESSAGE
-// ==========================================
-
-bot.action('admin_startimage', async (ctx) => {
+// Search Users
+bot.action('admin_search_users', async (ctx) => {
     if (!await isAdmin(ctx.from.id)) return;
     
-    try {
-        const config = await db.collection('admin').findOne({ type: 'config' });
-        const currentImage = config?.startImage || DEFAULT_CONFIG.startImage;
-        const overlaySettings = config?.imageOverlaySettings || { startImage: true };
-        const hasOverlay = hasNameVariable(currentImage) || overlaySettings.startImage;
-        
-        const text = `<b>🖼️ Start Image Management</b>\n\nCurrent Image:\n<code>${currentImage}</code>\n\nOverlay: ${hasOverlay ? '✅ ON' : '❌ OFF'}\n\nSelect an option:`;
-        
-        const keyboard = [
-            [{ text: '✏️ Edit URL', callback_data: 'admin_edit_startimage_url' }, { text: '📤 Upload', callback_data: 'admin_upload_startimage' }],
-            [{ text: '🔄 Reset', callback_data: 'admin_reset_startimage' }, { text: '🔙 Back', callback_data: 'admin_back' }]
-        ];
-        
-        await safeEditMessage(ctx, text, {
-            reply_markup: { inline_keyboard: keyboard }
-        });
-    } catch (error) {
-        console.error('Start image menu error:', error);
-        await safeSendMessage(ctx, '❌ An error occurred.');
-    }
-});
-
-bot.action('admin_edit_startimage_url', async (ctx) => {
-    await safeSendMessage(ctx, 'Enter the new image URL:\n\n<i>Use {name} variable for user name overlay (optional)</i>\n\nType "cancel" to cancel.', {
+    await safeSendMessage(ctx, '🔍 *Search Users*\n\nEnter username, user ID, or name to search:\n\nType "cancel" to cancel.', {
         parse_mode: 'HTML'
     });
-    await ctx.scene.enter('edit_start_image_scene');
+    await ctx.scene.enter('search_users_scene');
 });
 
-scenes.editStartImage.on('text', async (ctx) => {
+// Search Users Scene
+scenes.searchUsers.on('text', async (ctx) => {
     try {
         if (ctx.message.text.toLowerCase() === 'cancel') {
-            await safeSendMessage(ctx, '❌ Edit cancelled.');
+            await safeSendMessage(ctx, '❌ Search cancelled.');
             await ctx.scene.leave();
             await showAdminPanel(ctx);
             return;
         }
         
-        const newUrl = ctx.message.text.trim();
+        const searchTerm = ctx.message.text.trim();
+        let users = [];
         
-        if (!newUrl.startsWith('http')) {
-            await safeSendMessage(ctx, '❌ Invalid URL. Must start with http:// or https://');
-            return;
+        // Search by different criteria
+        if (searchTerm.startsWith('@')) {
+            // Search by username
+            const username = searchTerm.substring(1);
+            users = await db.collection('users').find({
+                username: { $regex: username, $options: 'i' }
+            }).limit(50).toArray();
+        } else if (!isNaN(searchTerm)) {
+            // Search by user ID
+            users = await db.collection('users').find({
+                userId: Number(searchTerm)
+            }).limit(50).toArray();
+        } else {
+            // Search by name
+            users = await db.collection('users').find({
+                $or: [
+                    { firstName: { $regex: searchTerm, $options: 'i' } },
+                    { lastName: { $regex: searchTerm, $options: 'i' } }
+                ]
+            }).limit(50).toArray();
         }
         
-        const isValid = await isValidImageUrl(newUrl);
-        if (!isValid) {
-            await safeSendMessage(ctx, '⚠️ The URL does not appear to be a valid image.\n\nDo you still want to use it?', {
-                reply_markup: {
-                    inline_keyboard: [
-                        [{ text: '✅ Yes, use anyway', callback_data: `confirm_bad_url_start_${encodeURIComponent(newUrl)}` }],
-                        [{ text: '❌ No, cancel', callback_data: 'admin_startimage' }]
-                    ]
+        let searchText = `🔍 *Search Results*\n\n`;
+        searchText += `Search term: \`${searchTerm}\`\n`;
+        searchText += `Found: ${users.length} users\n\n`;
+        
+        if (users.length === 0) {
+            searchText += `No users found.\n`;
+        } else {
+            searchText += `*Users:*\n\n`;
+            
+            const keyboard = [];
+            
+            // Group users 2 per row
+            for (let i = 0; i < users.length; i += 2) {
+                const row = [];
+                
+                // First user in row
+                const user1 = users[i];
+                const user1Name = user1.username ? `@${user1.username}` : user1.firstName || `User ${user1.userId}`;
+                row.push({ 
+                    text: `${i + 1}. ${user1Name.substring(0, 15)}`, 
+                    callback_data: `user_detail_${user1.userId}` 
+                });
+                
+                // Second user in row if exists
+                if (i + 1 < users.length) {
+                    const user2 = users[i + 1];
+                    const user2Name = user2.username ? `@${user2.username}` : user2.firstName || `User ${user2.userId}`;
+                    row.push({ 
+                        text: `${i + 2}. ${user2Name.substring(0, 15)}`, 
+                        callback_data: `user_detail_${user2.userId}` 
+                    });
                 }
+                
+                keyboard.push(row);
+            }
+            
+            keyboard.push([{ text: '🔍 New Search', callback_data: 'admin_search_users' }]);
+            keyboard.push([{ text: '🔙 Back to Users', callback_data: 'admin_userstats' }]);
+            
+            await safeSendMessage(ctx, searchText, {
+                parse_mode: 'HTML',
+                reply_markup: { inline_keyboard: keyboard }
             });
+            
+            await ctx.scene.leave();
             return;
         }
         
-        await db.collection('admin').updateOne(
-            { type: 'config' },
-            { 
-                $set: { 
-                    startImage: newUrl, 
-                    updatedAt: new Date(),
-                    'imageOverlaySettings.startImage': hasNameVariable(newUrl)
-                } 
-            }
-        );
+        const keyboard = [
+            [{ text: '🔍 New Search', callback_data: 'admin_search_users' }],
+            [{ text: '🔙 Back to Users', callback_data: 'admin_userstats' }]
+        ];
         
-        await safeSendMessage(ctx, '✅ Start image URL updated!');
+        await safeSendMessage(ctx, searchText, {
+            parse_mode: 'HTML',
+            reply_markup: { inline_keyboard: keyboard }
+        });
+        
         await ctx.scene.leave();
-        await showAdminPanel(ctx);
+        
     } catch (error) {
-        console.error('Edit start image error:', error);
-        await safeSendMessage(ctx, '❌ Failed to update image.');
+        console.error('Search users scene error:', error);
+        await safeSendMessage(ctx, '❌ Error searching users. Please try again.');
         await ctx.scene.leave();
     }
 });
+
+// ==========================================
+// ADMIN FEATURES - START MESSAGE
+// ==========================================
 
 bot.action('admin_startmessage', async (ctx) => {
     if (!await isAdmin(ctx.from.id)) return;
@@ -2827,15 +3826,15 @@ bot.action('admin_startmessage', async (ctx) => {
         const config = await db.collection('admin').findOne({ type: 'config' });
         const currentMessage = config?.startMessage || DEFAULT_CONFIG.startMessage;
         
-        // Show message in code tags
-        const text = `<b>📝 Start Message Management</b>\n\nCurrent Message:\n<code>${escapeMarkdown(currentMessage)}</code>\n\nAvailable variables: {first_name}, {last_name}, {full_name}, {username}, {name}, {user_id}\n\nSupports HTML formatting\n\nSelect an option:`;
+        const text = `📝 *Start Message Management*\n\nCurrent Message:\n${formatHTMLForDisplay(currentMessage, true)}\n\nAvailable variables: {first_name}, {last_name}, {full_name}, {username}, {name}, {total_users}, {total_paid}, {available_tasks}\n\nSupports HTML formatting\n\nSelect an option:`;
         
         const keyboard = [
             [{ text: '✏️ Edit', callback_data: 'admin_edit_startmessage' }, { text: '🔄 Reset', callback_data: 'admin_reset_startmessage' }],
-            [{ text: '🔙 Back', callback_data: 'admin_back' }]
+            [{ text: '🔙 Back', callback_data: 'admin_messages_menu' }]
         ];
         
         await safeEditMessage(ctx, text, {
+            parse_mode: 'HTML',
             reply_markup: { inline_keyboard: keyboard }
         });
     } catch (error) {
@@ -2849,7 +3848,7 @@ bot.action('admin_edit_startmessage', async (ctx) => {
         const config = await db.collection('admin').findOne({ type: 'config' });
         const currentMessage = config?.startMessage || DEFAULT_CONFIG.startMessage;
         
-        await safeSendMessage(ctx, `Current message:\n<code>${escapeMarkdown(currentMessage)}</code>\n\nEnter the new start message:\n\n<i>Supports HTML formatting</i>\n\nType "cancel" to cancel.`, {
+        await safeSendMessage(ctx, `Current message:\n${formatHTMLForDisplay(currentMessage, true)}\n\nEnter the new start message:\n\nSupports HTML formatting\n\nType "cancel" to cancel.`, {
             parse_mode: 'HTML'
         });
         await ctx.scene.enter('edit_start_message_scene');
@@ -2875,6 +3874,7 @@ scenes.editStartMessage.on('text', async (ctx) => {
         await safeSendMessage(ctx, '✅ Start message updated!');
         await ctx.scene.leave();
         
+        // Return to admin panel
         const message = await safeSendMessage(ctx, 'Returning to admin panel...');
         setTimeout(async () => {
             try {
@@ -2892,28 +3892,544 @@ scenes.editStartMessage.on('text', async (ctx) => {
     }
 });
 
-// ==========================================
-// ADMIN - GIFT CODES MENU
-// ==========================================
-
-bot.action('admin_giftcodes_menu', async (ctx) => {
-    if (!await isAdmin(ctx.from.id)) return;
-    
-    const text = '<b>🎫 Gift Codes Management</b>\n\nSelect an option:';
-    
-    const keyboard = [
-        [{ text: '➕ Create Gift Code', callback_data: 'admin_create_giftcode' }],
-        [{ text: '📋 Manage Gift Codes', callback_data: 'admin_manage_giftcodes' }],
-        [{ text: '🔙 Back to Admin', callback_data: 'admin_back' }]
-    ];
-    
-    await safeEditMessage(ctx, text, {
-        reply_markup: { inline_keyboard: keyboard }
-    });
+bot.action('admin_reset_startmessage', async (ctx) => {
+    try {
+        await db.collection('admin').updateOne(
+            { type: 'config' },
+            { $set: { startMessage: DEFAULT_CONFIG.startMessage, updatedAt: new Date() } }
+        );
+        
+        await ctx.answerCbQuery('✅ Start message reset to default');
+        await showAdminPanel(ctx);
+    } catch (error) {
+        console.error('Reset start message error:', error);
+        await ctx.answerCbQuery('❌ Failed to reset message');
+    }
 });
 
+// ==========================================
+// ADMIN FEATURES - MENU MESSAGE
+// ==========================================
+
+bot.action('admin_menumessage', async (ctx) => {
+    if (!await isAdmin(ctx.from.id)) return;
+    
+    try {
+        const config = await db.collection('admin').findOne({ type: 'config' });
+        const currentMessage = config?.menuMessage || DEFAULT_CONFIG.menuMessage;
+        
+        const text = `📝 *Menu Message Management*\n\nCurrent Message:\n${formatHTMLForDisplay(currentMessage, true)}\n\nAvailable variables: {first_name}, {last_name}, {full_name}, {username}, {name}, {balance}, {total_referrals}, {tasks_completed}, {wallet_set}\n\nSupports HTML formatting\n\nSelect an option:`;
+        
+        const keyboard = [
+            [{ text: '✏️ Edit', callback_data: 'admin_edit_menumessage' }, { text: '🔄 Reset', callback_data: 'admin_reset_menumessage' }],
+            [{ text: '🔙 Back', callback_data: 'admin_messages_menu' }]
+        ];
+        
+        await safeEditMessage(ctx, text, {
+            parse_mode: 'HTML',
+            reply_markup: { inline_keyboard: keyboard }
+        });
+    } catch (error) {
+        console.error('Menu message menu error:', error);
+        await safeSendMessage(ctx, '❌ An error occurred.');
+    }
+});
+
+bot.action('admin_edit_menumessage', async (ctx) => {
+    try {
+        const config = await db.collection('admin').findOne({ type: 'config' });
+        const currentMessage = config?.menuMessage || DEFAULT_CONFIG.menuMessage;
+        
+        await safeSendMessage(ctx, `Current message:\n${formatHTMLForDisplay(currentMessage, true)}\n\nEnter the new menu message:\n\nSupports HTML formatting\n\nType "cancel" to cancel.`, {
+            parse_mode: 'HTML'
+        });
+        await ctx.scene.enter('edit_menu_message_scene');
+    } catch (error) {
+        console.error('Edit menu message error:', error);
+        await safeSendMessage(ctx, '❌ An error occurred.');
+    }
+});
+
+scenes.editMenuMessage.on('text', async (ctx) => {
+    try {
+        if (ctx.message.text.toLowerCase() === 'cancel') {
+            await safeSendMessage(ctx, '❌ Edit cancelled.');
+            await ctx.scene.leave();
+            return;
+        }
+        
+        await db.collection('admin').updateOne(
+            { type: 'config' },
+            { $set: { menuMessage: ctx.message.text, updatedAt: new Date() } }
+        );
+        
+        await safeSendMessage(ctx, '✅ Menu message updated!');
+        await ctx.scene.leave();
+        
+        // Return to admin panel
+        const message = await safeSendMessage(ctx, 'Returning to admin panel...');
+        setTimeout(async () => {
+            try {
+                await bot.telegram.deleteMessage(ctx.chat.id, message.message_id);
+                await showAdminPanel(ctx);
+            } catch (error) {
+                console.error('Error returning to admin:', error);
+            }
+        }, 1000);
+        
+    } catch (error) {
+        console.error('Edit menu message error:', error);
+        await safeSendMessage(ctx, '✅ Message updated!\n\nUse /admin to return to panel.');
+        await ctx.scene.leave();
+    }
+});
+
+bot.action('admin_reset_menumessage', async (ctx) => {
+    try {
+        await db.collection('admin').updateOne(
+            { type: 'config' },
+            { $set: { menuMessage: DEFAULT_CONFIG.menuMessage, updatedAt: new Date() } }
+        );
+        
+        await ctx.answerCbQuery('✅ Menu message reset to default');
+        await showAdminPanel(ctx);
+    } catch (error) {
+        console.error('Reset menu message error:', error);
+        await ctx.answerCbQuery('❌ Failed to reset message');
+    }
+});
+
+// ==========================================
+// ADMIN FEATURES - START IMAGE
+// ==========================================
+
+bot.action('admin_startimage', async (ctx) => {
+    if (!await isAdmin(ctx.from.id)) return;
+    
+    try {
+        const config = await db.collection('admin').findOne({ type: 'config' });
+        const currentImage = config?.startImage || DEFAULT_CONFIG.startImage;
+        const overlaySettings = config?.imageOverlaySettings || { startImage: true };
+        const hasOverlay = overlaySettings.startImage;
+        
+        const text = `🖼️ *Start Image Management*\n\nCurrent Image:\n\`${currentImage}\`\n\nOverlay: ${hasOverlay ? '✅ ON' : '❌ OFF'}\n\nSelect an option:`;
+        
+        const keyboard = [
+            [{ text: '✏️ Edit URL', callback_data: 'admin_edit_startimage_url' }, { text: '📤 Upload', callback_data: 'admin_upload_startimage' }],
+            [{ text: '🔄 Reset', callback_data: 'admin_reset_startimage' }, { text: '🔙 Back', callback_data: 'admin_images_menu' }]
+        ];
+        
+        await safeEditMessage(ctx, text, {
+            parse_mode: 'HTML',
+            reply_markup: { inline_keyboard: keyboard }
+        });
+    } catch (error) {
+        console.error('Start image menu error:', error);
+        await safeSendMessage(ctx, '❌ An error occurred.');
+    }
+});
+
+bot.action('admin_edit_startimage_url', async (ctx) => {
+    await safeSendMessage(ctx, 'Enter the new image URL:\n\nUse {name} variable for user name overlay (optional)\n\nType "cancel" to cancel.', {
+        parse_mode: 'HTML'
+    });
+    await ctx.scene.enter('edit_start_image_scene');
+});
+
+scenes.editStartImage.on('text', async (ctx) => {
+    try {
+        if (ctx.message.text.toLowerCase() === 'cancel') {
+            await safeSendMessage(ctx, '❌ Edit cancelled.');
+            await ctx.scene.leave();
+            await showAdminPanel(ctx);
+            return;
+        }
+        
+        const newUrl = ctx.message.text.trim();
+        
+        if (!newUrl.startsWith('http')) {
+            await safeSendMessage(ctx, '❌ Invalid URL. Must start with http:// or https://');
+            return;
+        }
+        
+        // Check if URL is valid image
+        const isValid = await isValidImageUrl(newUrl);
+        if (!isValid) {
+            await safeSendMessage(ctx, '⚠️ The URL does not appear to be a valid image.\n\nDo you still want to use it?', {
+                parse_mode: 'HTML',
+                reply_markup: {
+                    inline_keyboard: [
+                        [{ text: '✅ Yes, use anyway', callback_data: `confirm_bad_url_start_${encodeURIComponent(newUrl)}` }],
+                        [{ text: '❌ No, cancel', callback_data: 'admin_startimage' }]
+                    ]
+                }
+            });
+            return;
+        }
+        
+        // Update database
+        await db.collection('admin').updateOne(
+            { type: 'config' },
+            { 
+                $set: { 
+                    startImage: newUrl, 
+                    updatedAt: new Date(),
+                    'imageOverlaySettings.startImage': newUrl.includes('{name}')
+                } 
+            }
+        );
+        
+        await safeSendMessage(ctx, '✅ Start image URL updated!');
+        await ctx.scene.leave();
+        await showAdminPanel(ctx);
+    } catch (error) {
+        console.error('Edit start image error:', error);
+        await safeSendMessage(ctx, '❌ Failed to update image.');
+        await ctx.scene.leave();
+    }
+});
+
+bot.action('admin_upload_startimage', async (ctx) => {
+    try {
+        ctx.session.uploadingImageType = 'startImage';
+        await safeSendMessage(ctx, 'Send the image you want to upload:\n\nType "cancel" to cancel.');
+        await ctx.scene.enter('image_overlay_scene');
+    } catch (error) {
+        console.error('Upload start image error:', error);
+        await safeSendMessage(ctx, '❌ Error starting upload.');
+    }
+});
+
+bot.action('admin_reset_startimage', async (ctx) => {
+    try {
+        await db.collection('admin').updateOne(
+            { type: 'config' },
+            { 
+                $set: { 
+                    startImage: DEFAULT_CONFIG.startImage, 
+                    updatedAt: new Date(),
+                    'imageOverlaySettings.startImage': true
+                } 
+            }
+        );
+        
+        await ctx.answerCbQuery('✅ Start image reset to default');
+        await showAdminPanel(ctx);
+    } catch (error) {
+        console.error('Reset start image error:', error);
+        await ctx.answerCbQuery('❌ Failed to reset image');
+    }
+});
+
+// ==========================================
+// ADMIN FEATURES - MENU IMAGE
+// ==========================================
+
+bot.action('admin_menuimage', async (ctx) => {
+    if (!await isAdmin(ctx.from.id)) return;
+    
+    try {
+        const config = await db.collection('admin').findOne({ type: 'config' });
+        const currentImage = config?.menuImage || DEFAULT_CONFIG.menuImage;
+        const overlaySettings = config?.imageOverlaySettings || { menuImage: true };
+        const hasOverlay = overlaySettings.menuImage;
+        
+        const text = `🖼️ *Menu Image Management*\n\nCurrent Image:\n\`${currentImage}\`\n\nOverlay: ${hasOverlay ? '✅ ON' : '❌ OFF'}\n\nSelect an option:`;
+        
+        const keyboard = [
+            [{ text: '✏️ Edit URL', callback_data: 'admin_edit_menuimage_url' }, { text: '📤 Upload', callback_data: 'admin_upload_menuimage' }],
+            [{ text: '🔄 Reset', callback_data: 'admin_reset_menuimage' }, { text: '🔙 Back', callback_data: 'admin_images_menu' }]
+        ];
+        
+        await safeEditMessage(ctx, text, {
+            parse_mode: 'HTML',
+            reply_markup: { inline_keyboard: keyboard }
+        });
+    } catch (error) {
+        console.error('Menu image menu error:', error);
+        await safeSendMessage(ctx, '❌ An error occurred.');
+    }
+});
+
+bot.action('admin_edit_menuimage_url', async (ctx) => {
+    await safeSendMessage(ctx, 'Enter the new image URL:\n\nUse {name} variable for user name overlay (optional)\n\nType "cancel" to cancel.', {
+        parse_mode: 'HTML'
+    });
+    await ctx.scene.enter('edit_menu_image_scene');
+});
+
+scenes.editMenuImage.on('text', async (ctx) => {
+    try {
+        if (ctx.message.text.toLowerCase() === 'cancel') {
+            await safeSendMessage(ctx, '❌ Edit cancelled.');
+            await ctx.scene.leave();
+            await showAdminPanel(ctx);
+            return;
+        }
+        
+        const newUrl = ctx.message.text.trim();
+        
+        if (!newUrl.startsWith('http')) {
+            await safeSendMessage(ctx, '❌ Invalid URL. Must start with http:// or https://');
+            return;
+        }
+        
+        // Check if URL is valid image
+        const isValid = await isValidImageUrl(newUrl);
+        if (!isValid) {
+            await safeSendMessage(ctx, '⚠️ The URL does not appear to be a valid image.\n\nDo you still want to use it?', {
+                parse_mode: 'HTML',
+                reply_markup: {
+                    inline_keyboard: [
+                        [{ text: '✅ Yes, use anyway', callback_data: `confirm_bad_url_menu_${encodeURIComponent(newUrl)}` }],
+                        [{ text: '❌ No, cancel', callback_data: 'admin_menuimage' }]
+                    ]
+                }
+            });
+            return;
+        }
+        
+        await db.collection('admin').updateOne(
+            { type: 'config' },
+            { 
+                $set: { 
+                    menuImage: newUrl, 
+                    updatedAt: new Date(),
+                    'imageOverlaySettings.menuImage': newUrl.includes('{name}')
+                } 
+            }
+        );
+        
+        await safeSendMessage(ctx, '✅ Menu image URL updated!');
+        await ctx.scene.leave();
+        await showAdminPanel(ctx);
+    } catch (error) {
+        console.error('Edit menu image error:', error);
+        await safeSendMessage(ctx, '❌ Failed to update image.');
+        await ctx.scene.leave();
+    }
+});
+
+bot.action('admin_upload_menuimage', async (ctx) => {
+    try {
+        ctx.session.uploadingImageType = 'menuImage';
+        await safeSendMessage(ctx, 'Send the image you want to upload:\n\nType "cancel" to cancel.');
+        await ctx.scene.enter('image_overlay_scene');
+    } catch (error) {
+        console.error('Upload menu image error:', error);
+        await safeSendMessage(ctx, '❌ Error starting upload.');
+    }
+});
+
+bot.action('admin_reset_menuimage', async (ctx) => {
+    try {
+        await db.collection('admin').updateOne(
+            { type: 'config' },
+            { 
+                $set: { 
+                    menuImage: DEFAULT_CONFIG.menuImage, 
+                    updatedAt: new Date(),
+                    'imageOverlaySettings.menuImage': true
+                } 
+            }
+        );
+        
+        await ctx.answerCbQuery('✅ Menu image reset to default');
+        await showAdminPanel(ctx);
+    } catch (error) {
+        console.error('Reset menu image error:', error);
+        await ctx.answerCbQuery('❌ Failed to reset image');
+    }
+});
+
+// ==========================================
+// ADMIN FEATURES - BONUS IMAGE
+// ==========================================
+
+bot.action('admin_bonusimage', async (ctx) => {
+    if (!await isAdmin(ctx.from.id)) return;
+    
+    try {
+        const config = await db.collection('admin').findOne({ type: 'config' });
+        const bonusSettings = config?.bonusSettings || DEFAULT_CONFIG.bonus;
+        const currentImage = bonusSettings.image || DEFAULT_CONFIG.bonus.image;
+        const showAmountOverlay = bonusSettings.showAmountOverlay !== false;
+        
+        const text = `🎁 *Bonus Image Management*\n\nCurrent Image:\n\`${currentImage}\`\n\nShow Amount Overlay: ${showAmountOverlay ? '✅ ON' : '❌ OFF'}\n\nSelect an option:`;
+        
+        const keyboard = [
+            [{ text: '✏️ Edit URL', callback_data: 'admin_edit_bonusimage_url' }, { text: '📤 Upload', callback_data: 'admin_upload_bonusimage' }],
+            [{ text: '🔄 Reset', callback_data: 'admin_reset_bonusimage' }, { text: '🔙 Back', callback_data: 'admin_bonus_menu' }]
+        ];
+        
+        await safeEditMessage(ctx, text, {
+            parse_mode: 'HTML',
+            reply_markup: { inline_keyboard: keyboard }
+        });
+    } catch (error) {
+        console.error('Bonus image menu error:', error);
+        await safeSendMessage(ctx, '❌ An error occurred.');
+    }
+});
+
+// ==========================================
+// ADMIN FEATURES - IMAGE OVERLAY
+// ==========================================
+
+bot.action('admin_image_overlay', async (ctx) => {
+    if (!await isAdmin(ctx.from.id)) return;
+    
+    try {
+        const config = await db.collection('admin').findOne({ type: 'config' });
+        const overlaySettings = config?.imageOverlaySettings || {
+            startImage: true,
+            menuImage: true,
+            bonusImage: true
+        };
+        
+        const text = `⚙️ *Image Overlay Settings*\n\nConfigure whether to show overlay on images:\n\n• Start Image: ${overlaySettings.startImage ? '✅ ON' : '❌ OFF'}\n• Menu Image: ${overlaySettings.menuImage ? '✅ ON' : '❌ OFF'}\n• Bonus Image: ${overlaySettings.bonusImage ? '✅ ON' : '❌ OFF'}\n\nSelect an option:`;
+        
+        const keyboard = [
+            [
+                { text: overlaySettings.startImage ? '✅ Start Image' : '❌ Start Image', callback_data: 'toggle_start_overlay' },
+                { text: overlaySettings.menuImage ? '✅ Menu Image' : '❌ Menu Image', callback_data: 'toggle_menu_overlay' }
+            ],
+            [
+                { text: overlaySettings.bonusImage ? '✅ Bonus Image' : '❌ Bonus Image', callback_data: 'toggle_bonus_overlay' }
+            ],
+            [{ text: '🔙 Back', callback_data: 'admin_images_menu' }]
+        ];
+        
+        await safeEditMessage(ctx, text, {
+            parse_mode: 'HTML',
+            reply_markup: { inline_keyboard: keyboard }
+        });
+    } catch (error) {
+        console.error('Image overlay menu error:', error);
+        await safeSendMessage(ctx, '❌ An error occurred.');
+    }
+});
+
+// Toggle overlay settings
+bot.action('toggle_start_overlay', async (ctx) => {
+    try {
+        const config = await db.collection('admin').findOne({ type: 'config' });
+        const currentSettings = config?.imageOverlaySettings || {
+            startImage: true,
+            menuImage: true,
+            bonusImage: true
+        };
+        
+        currentSettings.startImage = !currentSettings.startImage;
+        
+        await db.collection('admin').updateOne(
+            { type: 'config' },
+            { $set: { imageOverlaySettings: currentSettings, updatedAt: new Date() } }
+        );
+        
+        await ctx.answerCbQuery(`✅ Start image overlay ${currentSettings.startImage ? 'enabled' : 'disabled'}`);
+        await bot.action('admin_image_overlay')(ctx);
+    } catch (error) {
+        console.error('Toggle start overlay error:', error);
+        await ctx.answerCbQuery('❌ Failed to update setting');
+    }
+});
+
+bot.action('toggle_menu_overlay', async (ctx) => {
+    try {
+        const config = await db.collection('admin').findOne({ type: 'config' });
+        const currentSettings = config?.imageOverlaySettings || {
+            startImage: true,
+            menuImage: true,
+            bonusImage: true
+        };
+        
+        currentSettings.menuImage = !currentSettings.menuImage;
+        
+        await db.collection('admin').updateOne(
+            { type: 'config' },
+            { $set: { imageOverlaySettings: currentSettings, updatedAt: new Date() } }
+        );
+        
+        await ctx.answerCbQuery(`✅ Menu image overlay ${currentSettings.menuImage ? 'enabled' : 'disabled'}`);
+        await bot.action('admin_image_overlay')(ctx);
+    } catch (error) {
+        console.error('Toggle menu overlay error:', error);
+        await ctx.answerCbQuery('❌ Failed to update setting');
+    }
+});
+
+bot.action('toggle_bonus_overlay', async (ctx) => {
+    try {
+        const config = await db.collection('admin').findOne({ type: 'config' });
+        const currentSettings = config?.imageOverlaySettings || {
+            startImage: true,
+            menuImage: true,
+            bonusImage: true
+        };
+        
+        currentSettings.bonusImage = !currentSettings.bonusImage;
+        
+        await db.collection('admin').updateOne(
+            { type: 'config' },
+            { $set: { imageOverlaySettings: currentSettings, updatedAt: new Date() } }
+        );
+        
+        await ctx.answerCbQuery(`✅ Bonus image overlay ${currentSettings.bonusImage ? 'enabled' : 'disabled'}`);
+        await bot.action('admin_image_overlay')(ctx);
+    } catch (error) {
+        console.error('Toggle bonus overlay error:', error);
+        await ctx.answerCbQuery('❌ Failed to update setting');
+    }
+});
+
+// ==========================================
+// ADMIN FEATURES - MANAGE IMAGES
+// ==========================================
+
+bot.action('admin_manage_images', async (ctx) => {
+    if (!await isAdmin(ctx.from.id)) return;
+    
+    try {
+        const config = await db.collection('admin').findOne({ type: 'config' });
+        const images = config?.uploadedImages || [];
+        
+        let text = `🖼️ *Manage Uploaded Images*\n\n`;
+        
+        if (images.length === 0) {
+            text += `No images uploaded yet.\n`;
+        } else {
+            text += `Total uploaded images: ${images.length}\n`;
+            text += `\nImages not currently in use can be deleted\n`;
+        }
+        
+        const keyboard = [];
+        
+        if (images.length > 0) {
+            keyboard.push([{ text: '🗑️ Delete Unused Images', callback_data: 'delete_unused_images' }]);
+            keyboard.push([{ text: '📋 List All Images', callback_data: 'list_all_images' }]);
+        }
+        
+        keyboard.push([{ text: '🔙 Back', callback_data: 'admin_images_menu' }]);
+        
+        await safeEditMessage(ctx, text, {
+            parse_mode: 'HTML',
+            reply_markup: { inline_keyboard: keyboard }
+        });
+    } catch (error) {
+        console.error('Manage images menu error:', error);
+        await safeSendMessage(ctx, '❌ An error occurred.');
+    }
+});
+
+// ==========================================
+// ADMIN FEATURES - CREATE GIFT CODE
+// ==========================================
+
 bot.action('admin_create_giftcode', async (ctx) => {
-    await safeSendMessage(ctx, '🎫 <b>Create Gift Code</b>\n\nEnter maximum number of uses (0 for unlimited):\n\nType "cancel" to cancel.', {
+    if (!await isAdmin(ctx.from.id)) return;
+    
+    await safeSendMessage(ctx, '🎫 *Create Gift Code*\n\nEnter maximum number of uses (or 0 for unlimited):\n\nType "cancel" to cancel.', {
         parse_mode: 'HTML'
     });
     await ctx.scene.enter('create_gift_code_scene');
@@ -2922,7 +4438,41 @@ bot.action('admin_create_giftcode', async (ctx) => {
 // Create Gift Code Scene
 scenes.createGiftCode.on('text', async (ctx) => {
     try {
-        if (!ctx.session.giftCodeData) ctx.session.giftCodeData = {};
+        if (ctx.message.text.toLowerCase() === 'cancel') {
+            await safeSendMessage(ctx, '❌ Gift code creation cancelled.');
+            await ctx.scene.leave();
+            await showAdminPanel(ctx);
+            return;
+        }
+        
+        const maxUses = parseInt(ctx.message.text);
+        if (isNaN(maxUses) || maxUses < 0) {
+            await safeSendMessage(ctx, '❌ Please enter a valid number (0 for unlimited).\n\nType "cancel" to cancel.');
+            return;
+        }
+        
+        ctx.session.giftCodeData = {
+            maxUses: maxUses,
+            step: 'expiry'
+        };
+        
+        await safeSendMessage(ctx, 'Enter expiry time in minutes (or 0 for no expiry):\n\nType "cancel" to cancel.');
+        
+    } catch (error) {
+        console.error('Create gift code scene error:', error);
+        await safeSendMessage(ctx, '❌ An error occurred. Please try again.');
+        await ctx.scene.leave();
+    }
+});
+
+// Continue gift code creation in the same scene
+scenes.createGiftCode.on('text', async (ctx) => {
+    try {
+        if (!ctx.session.giftCodeData) {
+            await safeSendMessage(ctx, '❌ Session expired. Please start again.');
+            await ctx.scene.leave();
+            return;
+        }
         
         if (ctx.message.text.toLowerCase() === 'cancel') {
             await safeSendMessage(ctx, '❌ Gift code creation cancelled.');
@@ -2932,110 +4482,104 @@ scenes.createGiftCode.on('text', async (ctx) => {
             return;
         }
         
-        const step = ctx.session.giftCodeData.step || 1;
+        const step = ctx.session.giftCodeData.step;
         
-        if (step === 1) {
-            // Max uses
-            const maxUses = parseInt(ctx.message.text);
-            if (isNaN(maxUses) || maxUses < 0) {
-                await safeSendMessage(ctx, '❌ Please enter a valid number (0 for unlimited).');
-                return;
-            }
-            
-            ctx.session.giftCodeData.maxUses = maxUses;
-            ctx.session.giftCodeData.step = 2;
-            
-            await safeSendMessage(ctx, '⏰ Enter expiry time in minutes (0 for no expiry):\n\nType "cancel" to cancel.');
-            
-        } else if (step === 2) {
-            // Expiry time
+        if (step === 'expiry') {
             const expiryMinutes = parseInt(ctx.message.text);
             if (isNaN(expiryMinutes) || expiryMinutes < 0) {
-                await safeSendMessage(ctx, '❌ Please enter a valid number (0 for no expiry).');
+                await safeSendMessage(ctx, '❌ Please enter a valid number (0 for no expiry).\n\nType "cancel" to cancel.');
                 return;
             }
             
             ctx.session.giftCodeData.expiryMinutes = expiryMinutes;
-            ctx.session.giftCodeData.step = 3;
+            ctx.session.giftCodeData.step = 'length';
             
-            await safeSendMessage(ctx, '🔢 Enter code length (6-20 characters):\n\nType "cancel" to cancel.');
+            await safeSendMessage(ctx, 'Enter code length (8-20 characters):\n\nType "cancel" to cancel.');
             
-        } else if (step === 3) {
-            // Code length
-            const codeLength = parseInt(ctx.message.text);
-            if (isNaN(codeLength) || codeLength < 6 || codeLength > 20) {
-                await safeSendMessage(ctx, '❌ Please enter a number between 6 and 20.');
+        } else if (step === 'length') {
+            const length = parseInt(ctx.message.text);
+            if (isNaN(length) || length < 8 || length > 20) {
+                await safeSendMessage(ctx, '❌ Please enter a valid length between 8 and 20.\n\nType "cancel" to cancel.');
                 return;
             }
             
-            ctx.session.giftCodeData.codeLength = codeLength;
-            ctx.session.giftCodeData.step = 4;
+            ctx.session.giftCodeData.length = length;
+            ctx.session.giftCodeData.step = 'minAmount';
             
-            await safeSendMessage(ctx, '💰 Enter minimum amount (₹):\n\nType "cancel" to cancel.');
+            await safeSendMessage(ctx, 'Enter minimum amount (e.g., 10):\n\nType "cancel" to cancel.');
             
-        } else if (step === 4) {
-            // Min amount
+        } else if (step === 'minAmount') {
             const minAmount = parseFloat(ctx.message.text);
             if (isNaN(minAmount) || minAmount < 1) {
-                await safeSendMessage(ctx, '❌ Please enter a valid amount (minimum 1 ₹).');
+                await safeSendMessage(ctx, '❌ Please enter a valid minimum amount.\n\nType "cancel" to cancel.');
                 return;
             }
             
             ctx.session.giftCodeData.minAmount = minAmount;
-            ctx.session.giftCodeData.step = 5;
+            ctx.session.giftCodeData.step = 'maxAmount';
             
-            await safeSendMessage(ctx, '💰 Enter maximum amount (₹):\n\nType "cancel" to cancel.');
+            await safeSendMessage(ctx, 'Enter maximum amount (must be greater than minimum):\n\nType "cancel" to cancel.');
             
-        } else if (step === 5) {
-            // Max amount
+        } else if (step === 'maxAmount') {
             const maxAmount = parseFloat(ctx.message.text);
             const minAmount = ctx.session.giftCodeData.minAmount;
             
             if (isNaN(maxAmount) || maxAmount < minAmount) {
-                await safeSendMessage(ctx, `❌ Please enter a valid amount (minimum ${minAmount} ₹).`);
+                await safeSendMessage(ctx, `❌ Please enter a valid maximum amount (greater than ${minAmount}).\n\nType "cancel" to cancel.`);
                 return;
             }
             
             ctx.session.giftCodeData.maxAmount = maxAmount;
             
             // Generate gift code
-            const code = generateGiftCode(ctx.session.giftCodeData.codeLength);
+            const code = generateCode('', ctx.session.giftCodeData.length || 8);
             const giftCodeData = ctx.session.giftCodeData;
             
+            // Create gift code document
             const giftCode = {
                 code: code,
                 maxUses: giftCodeData.maxUses,
+                usedCount: 0,
                 minAmount: giftCodeData.minAmount,
                 maxAmount: giftCodeData.maxAmount,
-                expiryMinutes: giftCodeData.expiryMinutes,
+                isActive: true,
+                createdBy: ctx.from.id,
+                createdAt: new Date(),
                 expiresAt: giftCodeData.expiryMinutes > 0 ? 
                     new Date(Date.now() + giftCodeData.expiryMinutes * 60000) : null,
-                isActive: true,
-                usedCount: 0,
-                usedBy: [],
-                createdAt: new Date(),
-                createdBy: ctx.from.id
+                usedBy: []
             };
             
-            await db.collection('gift_codes').insertOne(giftCode);
+            await db.collection('giftcodes').insertOne(giftCode);
             
-            let giftCodeText = `✅ <b>Gift Code Created!</b>\n\n`;
-            giftCodeText += `🎫 Code: <code>${code}</code>\n`;
-            giftCodeText += `💰 Amount Range: ${minAmount} - ${maxAmount} ₹\n`;
-            giftCodeText += `👥 Max Uses: ${maxUses === 0 ? 'Unlimited' : maxUses}\n`;
-            giftCodeText += `⏰ Expiry: ${expiryMinutes === 0 ? 'Never' : `${expiryMinutes} minutes`}\n`;
-            giftCodeText += `📅 Created: ${new Date().toLocaleString()}\n\n`;
-            giftCodeText += `🔗 Users can redeem using /start or Menu > Gift Code`;
+            // Prepare success message
+            let successText = `✅ *Gift Code Created Successfully!*\n\n`;
+            successText += `🎫 *Code:* \`${code}\`\n`;
+            successText += `💰 *Amount Range:* ${formatCurrency(giftCodeData.minAmount)} - ${formatCurrency(giftCodeData.maxAmount)}\n`;
+            successText += `👥 *Max Uses:* ${giftCodeData.maxUses === 0 ? 'Unlimited' : giftCodeData.maxUses}\n`;
             
-            await safeSendMessage(ctx, giftCodeText, {
+            if (giftCodeData.expiryMinutes > 0) {
+                const expiryDate = new Date(giftCode.expiresAt).toLocaleString();
+                successText += `⏰ *Expires:* ${expiryDate}\n`;
+            } else {
+                successText += `⏰ *Expires:* Never\n`;
+            }
+            
+            successText += `📅 *Created:* ${new Date().toLocaleString()}\n\n`;
+            successText += `*Share this code with users to redeem!*`;
+            
+            const keyboard = [
+                [{ text: '📋 Copy Code', callback_data: `copy_gift_code_${code}` }],
+                [{ text: '🎫 Create Another', callback_data: 'admin_create_giftcode' }],
+                [{ text: '🔙 Back to Admin', callback_data: 'admin_back' }]
+            ];
+            
+            await safeSendMessage(ctx, successText, {
                 parse_mode: 'HTML',
-                reply_markup: {
-                    inline_keyboard: [[
-                        { text: '🔙 Back to Gift Codes', callback_data: 'admin_giftcodes_menu' }
-                    ]]
-                }
+                reply_markup: { inline_keyboard: keyboard }
             });
             
+            // Clear session
             delete ctx.session.giftCodeData;
             await ctx.scene.leave();
             
@@ -3043,409 +4587,507 @@ scenes.createGiftCode.on('text', async (ctx) => {
         
     } catch (error) {
         console.error('Create gift code scene error:', error);
-        await safeSendMessage(ctx, '❌ Error creating gift code.');
+        await safeSendMessage(ctx, '❌ Error creating gift code. Please try again.');
         delete ctx.session.giftCodeData;
         await ctx.scene.leave();
     }
 });
 
-bot.action('admin_manage_giftcodes', async (ctx) => {
+// Copy Gift Code
+bot.action(/^copy_gift_code_(.+)$/, async (ctx) => {
     try {
-        const giftCodes = await db.collection('gift_codes')
+        const code = ctx.match[1];
+        await ctx.answerCbQuery(`Gift code copied: ${code}`);
+    } catch (error) {
+        console.error('Copy gift code error:', error);
+    }
+});
+
+// ==========================================
+// ADMIN FEATURES - MANAGE GIFT CODES
+// ==========================================
+
+bot.action('admin_manage_giftcodes', async (ctx) => {
+    if (!await isAdmin(ctx.from.id)) return;
+    
+    try {
+        const page = ctx.session?.giftCodesPage || 1;
+        const limit = 10;
+        
+        const totalCodes = await db.collection('giftcodes').countDocuments();
+        const totalPages = Math.ceil(totalCodes / limit);
+        const skip = (page - 1) * limit;
+        
+        const giftCodes = await db.collection('giftcodes')
             .find({})
             .sort({ createdAt: -1 })
-            .limit(50)
+            .skip(skip)
+            .limit(limit)
             .toArray();
         
-        if (giftCodes.length === 0) {
-            await safeSendMessage(ctx, '❌ No gift codes found.');
-            return;
-        }
+        let codesText = `🎫 *Manage Gift Codes*\n\n`;
+        codesText += `Page ${page} of ${totalPages}\n`;
+        codesText += `Total Codes: ${totalCodes}\n\n`;
         
-        let text = `<b>📋 Manage Gift Codes</b>\n\n`;
-        text += `Total Gift Codes: ${giftCodes.length}\n\n`;
+        if (giftCodes.length === 0) {
+            codesText += `No gift codes found.\n`;
+        } else {
+            codesText += `*Gift Codes:*\n\n`;
+            
+            for (let i = 0; i < giftCodes.length; i++) {
+                const code = giftCodes[i];
+                const index = skip + i + 1;
+                const status = code.isActive ? '✅ Active' : '❌ Inactive';
+                const uses = code.maxUses === 0 ? 'Unlimited' : `${code.usedCount}/${code.maxUses}`;
+                const amount = code.minAmount === code.maxAmount ? 
+                    formatCurrency(code.minAmount) : 
+                    `${formatCurrency(code.minAmount)}-${formatCurrency(code.maxAmount)}`;
+                
+                codesText += `${index}. *${code.code}*\n`;
+                codesText += `   Amount: ${amount}\n`;
+                codesText += `   Uses: ${uses}\n`;
+                codesText += `   Status: ${status}\n`;
+                
+                if (code.expiresAt) {
+                    const expiryDate = new Date(code.expiresAt).toLocaleDateString();
+                    const isExpired = new Date(code.expiresAt) < new Date();
+                    codesText += `   Expires: ${expiryDate} ${isExpired ? '(Expired)' : ''}\n`;
+                }
+                codesText += `\n`;
+            }
+        }
         
         const keyboard = [];
         
-        giftCodes.forEach((code, index) => {
-            const status = code.isActive ? '✅' : '❌';
-            const expiry = code.expiresAt ? 
-                `${Math.ceil((new Date(code.expiresAt) - new Date()) / 60000)}m left` : 
-                'No expiry';
-            
-            keyboard.push([{ 
-                text: `${index + 1}. ${status} ${code.code} (${code.usedCount}/${code.maxUses || '∞'})`, 
-                callback_data: `edit_giftcode_${code._id}` 
-            }]);
-        });
+        // Code buttons
+        for (let i = 0; i < giftCodes.length; i += 2) {
+            const row = [];
+            for (let j = 0; j < 2 && (i + j) < giftCodes.length; j++) {
+                const code = giftCodes[i + j];
+                row.push({ 
+                    text: `${skip + i + j + 1}. ${code.code}`, 
+                    callback_data: `edit_giftcode_${code.code}` 
+                });
+            }
+            if (row.length > 0) keyboard.push(row);
+        }
         
-        keyboard.push([{ text: '🔙 Back to Gift Codes', callback_data: 'admin_giftcodes_menu' }]);
+        // Navigation buttons
+        if (totalPages > 1) {
+            const navRow = [];
+            if (page > 1) {
+                navRow.push({ text: '◀️ Previous', callback_data: `giftcodes_page_${page - 1}` });
+            }
+            navRow.push({ text: `📄 ${page}/${totalPages}`, callback_data: 'no_action' });
+            if (page < totalPages) {
+                navRow.push({ text: 'Next ▶️', callback_data: `giftcodes_page_${page + 1}` });
+            }
+            keyboard.push(navRow);
+        }
         
-        await safeEditMessage(ctx, text, {
+        keyboard.push(
+            [{ text: '➕ Create New Code', callback_data: 'admin_create_giftcode' }],
+            [{ text: '🔙 Back', callback_data: 'admin_giftcodes_menu' }]
+        );
+        
+        await safeEditMessage(ctx, codesText, {
+            parse_mode: 'HTML',
             reply_markup: { inline_keyboard: keyboard }
         });
+        
     } catch (error) {
         console.error('Manage gift codes error:', error);
         await ctx.answerCbQuery('❌ Error loading gift codes');
     }
 });
 
+// Edit Gift Code
+bot.action(/^edit_giftcode_(.+)$/, async (ctx) => {
+    try {
+        const code = ctx.match[1];
+        const giftCode = await db.collection('giftcodes').findOne({ code: code });
+        
+        if (!giftCode) {
+            await ctx.answerCbQuery('❌ Gift code not found');
+            return;
+        }
+        
+        let codeText = `🎫 *Edit Gift Code*\n\n`;
+        codeText += `*Code:* \`${giftCode.code}\`\n`;
+        codeText += `*Min Amount:* ${formatCurrency(giftCode.minAmount)}\n`;
+        codeText += `*Max Amount:* ${formatCurrency(giftCode.maxAmount)}\n`;
+        codeText += `*Used:* ${giftCode.usedCount}/${giftCode.maxUses === 0 ? '∞' : giftCode.maxUses}\n`;
+        codeText += `*Status:* ${giftCode.isActive ? '✅ Active' : '❌ Inactive'}\n`;
+        codeText += `*Created:* ${new Date(giftCode.createdAt).toLocaleString()}\n`;
+        
+        if (giftCode.expiresAt) {
+            const expiryDate = new Date(giftCode.expiresAt).toLocaleString();
+            const isExpired = new Date(giftCode.expiresAt) < new Date();
+            codeText += `*Expires:* ${expiryDate} ${isExpired ? '(Expired)' : ''}\n`;
+        }
+        
+        const keyboard = [
+            [
+                { text: giftCode.isActive ? '❌ Deactivate' : '✅ Activate', callback_data: `toggle_giftcode_${code}` },
+                { text: '✏️ Edit Amount', callback_data: `edit_giftcode_amount_${code}` }
+            ],
+            [
+                { text: '⏰ Edit Expiry', callback_data: `edit_giftcode_expiry_${code}` },
+                { text: '👥 Edit Uses', callback_data: `edit_giftcode_uses_${code}` }
+            ],
+            [
+                { text: '🗑️ Delete Code', callback_data: `delete_giftcode_${code}` }
+            ],
+            [
+                { text: '🔙 Back', callback_data: 'admin_manage_giftcodes' }
+            ]
+        ];
+        
+        await safeEditMessage(ctx, codeText, {
+            parse_mode: 'HTML',
+            reply_markup: { inline_keyboard: keyboard }
+        });
+        
+    } catch (error) {
+        console.error('Edit gift code error:', error);
+        await ctx.answerCbQuery('❌ Error loading gift code');
+    }
+});
+
 // ==========================================
-// ADMIN - BONUS MENU
+// ADMIN FEATURES - BONUS SETTINGS
 // ==========================================
 
-bot.action('admin_bonus_menu', async (ctx) => {
+bot.action('admin_bonus_settings', async (ctx) => {
     if (!await isAdmin(ctx.from.id)) return;
     
     try {
         const config = await db.collection('admin').findOne({ type: 'config' });
-        const bonusAmount = config?.bonusAmount || DEFAULT_CONFIG.bonusAmount;
-        const bonusEnabled = config?.bonusEnabled !== false;
+        const bonusSettings = config?.bonusSettings || DEFAULT_CONFIG.bonus;
         
-        const text = `<b>🎁 Bonus Management</b>\n\nCurrent Settings:\n• Amount: ${bonusAmount} ₹\n• Status: ${bonusEnabled ? '✅ Enabled' : '❌ Disabled'}\n\nSelect an option:`;
+        const text = `🎁 *Bonus Settings*\n\n`;
+        text += `*Status:* ${bonusSettings.enabled ? '✅ Enabled' : '❌ Disabled'}\n`;
+        text += `*Amount:* ${formatCurrency(bonusSettings.amount || 25)}\n`;
+        text += `*Show Amount Overlay:* ${bonusSettings.showAmountOverlay ? '✅ Yes' : '❌ No'}\n\n`;
+        text += `Select an option:`;
         
         const keyboard = [
-            [{ text: '💰 Set Bonus Amount', callback_data: 'admin_set_bonus_amount' }],
-            [{ text: '🖼️ Bonus Image', callback_data: 'admin_bonus_image' }],
-            [{ text: bonusEnabled ? '❌ Disable Bonus' : '✅ Enable Bonus', callback_data: 'admin_toggle_bonus' }],
-            [{ text: '🔙 Back to Admin', callback_data: 'admin_back' }]
+            [
+                { text: bonusSettings.enabled ? '❌ Disable Bonus' : '✅ Enable Bonus', callback_data: 'toggle_bonus_status' },
+                { text: '✏️ Edit Amount', callback_data: 'edit_bonus_amount' }
+            ],
+            [
+                { text: bonusSettings.showAmountOverlay ? '❌ Hide Amount' : '✅ Show Amount', callback_data: 'toggle_bonus_overlay_display' }
+            ],
+            [
+                { text: '🔙 Back', callback_data: 'admin_bonus_menu' }
+            ]
         ];
         
         await safeEditMessage(ctx, text, {
+            parse_mode: 'HTML',
             reply_markup: { inline_keyboard: keyboard }
         });
     } catch (error) {
-        console.error('Bonus menu error:', error);
-        await safeSendMessage(ctx, '❌ An error occurred.');
-    }
-});
-
-bot.action('admin_set_bonus_amount', async (ctx) => {
-    await safeSendMessage(ctx, '💰 <b>Set Bonus Amount</b>\n\nEnter new bonus amount (₹):\n\nType "cancel" to cancel.', {
-        parse_mode: 'HTML'
-    });
-    await ctx.scene.enter('set_bonus_amount_scene');
-});
-
-scenes.setBonusAmount.on('text', async (ctx) => {
-    try {
-        if (ctx.message.text.toLowerCase() === 'cancel') {
-            await safeSendMessage(ctx, '❌ Bonus amount update cancelled.');
-            await ctx.scene.leave();
-            await showAdminPanel(ctx);
-            return;
-        }
-        
-        const amount = parseFloat(ctx.message.text);
-        if (isNaN(amount) || amount < 1) {
-            await safeSendMessage(ctx, '❌ Please enter a valid amount (minimum 1 ₹).');
-            return;
-        }
-        
-        await db.collection('admin').updateOne(
-            { type: 'config' },
-            { $set: { bonusAmount: amount, updatedAt: new Date() } }
-        );
-        
-        await safeSendMessage(ctx, `✅ Bonus amount set to ${amount} ₹!`);
-        await ctx.scene.leave();
-        await showAdminPanel(ctx);
-        
-    } catch (error) {
-        console.error('Set bonus amount error:', error);
-        await safeSendMessage(ctx, '❌ Failed to update bonus amount.');
-        await ctx.scene.leave();
+        console.error('Bonus settings error:', error);
+        await ctx.answerCbQuery('❌ Error loading bonus settings');
     }
 });
 
 // ==========================================
-// ADMIN - CHANNELS MENU
+// ADMIN FEATURES - REFERRAL SETTINGS
 // ==========================================
 
-bot.action('admin_channels_menu', async (ctx) => {
-    if (!await isAdmin(ctx.from.id)) return;
-    
-    const text = '<b>📺 Channels Management</b>\n\nSelect an option:';
-    
-    const keyboard = [
-        [{ text: '➕ Add Channel', callback_data: 'admin_add_channel' }],
-        [{ text: '📋 Manage Channels', callback_data: 'admin_manage_channels' }],
-        [{ text: '⚙️ Channel Settings', callback_data: 'admin_channel_settings' }],
-        [{ text: '🔄 Reorder Channels', callback_data: 'admin_reorder_channels' }],
-        [{ text: '✏️ Edit Channels', callback_data: 'admin_edit_channels' }],
-        [{ text: '🔙 Back to Admin', callback_data: 'admin_back' }]
-    ];
-    
-    await safeEditMessage(ctx, text, {
-        reply_markup: { inline_keyboard: keyboard }
-    });
-});
-
-// Channel Settings
-bot.action('admin_channel_settings', async (ctx) => {
-    if (!await isAdmin(ctx.from.id)) return;
-    
-    const text = '<b>⚙️ Channel Settings</b>\n\nConfigure channel visibility and behavior:';
-    
-    const keyboard = [
-        [{ text: '👁️ Hide Channels (F)', callback_data: 'admin_hide_channels' }],
-        [{ text: '📺 Just Show (S)', callback_data: 'admin_just_show_channels' }],
-        [{ text: '✅ Auto Accept (SS)', callback_data: 'admin_auto_accept_channels' }],
-        [{ text: '🔒 Need Join (SSS)', callback_data: 'admin_need_join_channels' }],
-        [{ text: '🔙 Back to Channels', callback_data: 'admin_channels_menu' }]
-    ];
-    
-    await safeEditMessage(ctx, text, {
-        reply_markup: { inline_keyboard: keyboard }
-    });
-});
-
-// ==========================================
-// ADMIN - ADMINS MENU
-// ==========================================
-
-bot.action('admin_admins_menu', async (ctx) => {
+bot.action('admin_referral_settings', async (ctx) => {
     if (!await isAdmin(ctx.from.id)) return;
     
     try {
         const config = await db.collection('admin').findOne({ type: 'config' });
-        const admins = config?.admins || ADMIN_IDS;
-        const mutedAdmins = config?.mutedAdmins || [];
+        const referralSettings = config?.referralSettings || DEFAULT_CONFIG.referral;
         
-        let text = '<b>👑 Admin Management</b>\n\nCurrent Admins:\n';
-        
-        admins.forEach((adminId, index) => {
-            const isMuted = mutedAdmins.includes(adminId);
-            const status = isMuted ? '🔕' : '🔔';
-            text += `${index + 1}. ${status} <code>${adminId}</code>\n`;
-        });
-        
-        text += `\nAdmin Code: <code>${config?.adminCode || ADMIN_CODE}</code>\n\nSelect an option:`;
+        const text = `📤 *Referral Settings*\n\n`;
+        text += `*Status:* ${referralSettings.enabled ? '✅ Enabled' : '❌ Disabled'}\n`;
+        text += `*Refer Bonus:* ${formatCurrency(referralSettings.referBonus || 50)}\n`;
+        text += `*Min Refer Amount:* ${formatCurrency(referralSettings.minReferAmount || 10)}\n`;
+        text += `*Max Refer Amount:* ${formatCurrency(referralSettings.maxReferAmount || 100)}\n`;
+        text += `*Min Withdraw Referrals:* ${referralSettings.minWithdrawRefer || 2}\n\n`;
+        text += `Select an option:`;
         
         const keyboard = [
-            [{ text: '➕ Add Admin', callback_data: 'admin_add_admin' }, { text: '🗑️ Remove Admin', callback_data: 'admin_remove_admin' }],
-            [{ text: '🔑 Set Admin Code', callback_data: 'admin_set_admin_code' }],
-            [{ text: '🔕 Mute Notifications', callback_data: 'admin_mute_notifications' }],
-            [{ text: '🔙 Back to Admin', callback_data: 'admin_back' }]
+            [
+                { text: referralSettings.enabled ? '❌ Disable' : '✅ Enable', callback_data: 'toggle_referral_status' },
+                { text: '✏️ Edit Bonus', callback_data: 'edit_referral_bonus' }
+            ],
+            [
+                { text: '📈 Edit Limits', callback_data: 'edit_referral_limits' }
+            ],
+            [
+                { text: '🔙 Back', callback_data: 'admin_referral_menu' }
+            ]
         ];
         
         await safeEditMessage(ctx, text, {
+            parse_mode: 'HTML',
             reply_markup: { inline_keyboard: keyboard }
         });
     } catch (error) {
-        console.error('Admins menu error:', error);
-        await safeSendMessage(ctx, '❌ An error occurred.');
+        console.error('Referral settings error:', error);
+        await ctx.answerCbQuery('❌ Error loading referral settings');
     }
 });
 
-// Set Admin Code
-bot.action('admin_set_admin_code', async (ctx) => {
-    await safeSendMessage(ctx, '🔑 <b>Set Admin Code</b>\n\nEnter new admin code (users will use /admin CODE to become admin):\n\nType "cancel" to cancel.', {
-        parse_mode: 'HTML'
-    });
-    await ctx.scene.enter('set_admin_code_scene');
-});
+// ==========================================
+// ADMIN FEATURES - WITHDRAWAL SETTINGS
+// ==========================================
 
-scenes.setAdminCode.on('text', async (ctx) => {
+bot.action('admin_withdrawal_settings', async (ctx) => {
+    if (!await isAdmin(ctx.from.id)) return;
+    
     try {
-        if (ctx.message.text.toLowerCase() === 'cancel') {
-            await safeSendMessage(ctx, '❌ Admin code update cancelled.');
-            await ctx.scene.leave();
-            await showAdminPanel(ctx);
-            return;
-        }
+        const config = await db.collection('admin').findOne({ type: 'config' });
+        const withdrawalSettings = config?.withdrawalSettings || DEFAULT_CONFIG.withdrawal;
         
-        const newCode = ctx.message.text.trim();
+        const text = `💳 *Withdrawal Settings*\n\n`;
+        text += `*Status:* ${withdrawalSettings.enabled ? '✅ Enabled' : '❌ Disabled'}\n`;
+        text += `*Min Amount:* ${formatCurrency(withdrawalSettings.minAmount || 100)}\n`;
+        text += `*Max Amount:* ${formatCurrency(withdrawalSettings.maxAmount || 5000)}\n`;
+        text += `*Daily Limit:* ${formatCurrency(withdrawalSettings.dailyLimit || 2000)}\n`;
+        text += `*Processing Fee:* ${withdrawalSettings.processingFee || 2}%\n\n`;
+        text += `Select an option:`;
         
-        if (newCode.length < 4) {
-            await safeSendMessage(ctx, '❌ Admin code must be at least 4 characters.');
-            return;
-        }
+        const keyboard = [
+            [
+                { text: withdrawalSettings.enabled ? '❌ Disable' : '✅ Enable', callback_data: 'toggle_withdrawal_status' },
+                { text: '✏️ Edit Limits', callback_data: 'edit_withdrawal_limits' }
+            ],
+            [
+                { text: '💰 Edit Fee', callback_data: 'edit_withdrawal_fee' }
+            ],
+            [
+                { text: '🔙 Back', callback_data: 'admin_withdrawal_menu' }
+            ]
+        ];
         
-        await db.collection('admin').updateOne(
-            { type: 'config' },
-            { $set: { adminCode: newCode, updatedAt: new Date() } }
-        );
-        
-        await safeSendMessage(ctx, `✅ Admin code set to: <code>${newCode}</code>\n\nUsers can now use /admin ${newCode} to become admin.`, {
-            parse_mode: 'HTML'
+        await safeEditMessage(ctx, text, {
+            parse_mode: 'HTML',
+            reply_markup: { inline_keyboard: keyboard }
         });
-        await ctx.scene.leave();
-        await showAdminPanel(ctx);
-        
     } catch (error) {
-        console.error('Set admin code error:', error);
-        await safeSendMessage(ctx, '❌ Failed to update admin code.');
-        await ctx.scene.leave();
+        console.error('Withdrawal settings error:', error);
+        await ctx.answerCbQuery('❌ Error loading withdrawal settings');
     }
 });
 
 // ==========================================
-// ADMIN - TASKS MENU
+// ADMIN FEATURES - WITHDRAWAL REQUESTS
 // ==========================================
 
-bot.action('admin_tasks_menu', async (ctx) => {
-    if (!await isAdmin(ctx.from.id)) return;
-    
-    const text = '<b>📋 Tasks Management</b>\n\nSelect an option:';
-    
-    const keyboard = [
-        [{ text: '➕ Add Task', callback_data: 'admin_add_task' }],
-        [{ text: '📋 Manage Tasks', callback_data: 'admin_manage_tasks' }],
-        [{ text: '📨 Task Requests', callback_data: 'admin_task_requests' }],
-        [{ text: '📜 Task History', callback_data: 'admin_task_history' }],
-        [{ text: '🔙 Back to Admin', callback_data: 'admin_back' }]
-    ];
-    
-    await safeEditMessage(ctx, text, {
-        reply_markup: { inline_keyboard: keyboard }
-    });
-});
-
-// ==========================================
-// ADMIN - WITHDRAWALS MENU
-// ==========================================
-
-bot.action('admin_withdrawals_menu', async (ctx) => {
-    if (!await isAdmin(ctx.from.id)) return;
-    
-    const text = '<b>💰 Withdrawals Management</b>\n\nSelect an option:';
-    
-    const keyboard = [
-        [{ text: '📨 Withdrawal Requests', callback_data: 'admin_withdrawal_requests' }],
-        [{ text: '📜 Withdrawal History', callback_data: 'admin_withdrawal_history' }],
-        [{ text: '⚙️ Withdrawal Settings', callback_data: 'admin_withdrawal_settings' }],
-        [{ text: '🔙 Back to Admin', callback_data: 'admin_back' }]
-    ];
-    
-    await safeEditMessage(ctx, text, {
-        reply_markup: { inline_keyboard: keyboard }
-    });
-});
-
-// Withdrawal Requests
 bot.action('admin_withdrawal_requests', async (ctx) => {
+    if (!await isAdmin(ctx.from.id)) return;
+    
     try {
-        const withdrawals = await db.collection('withdrawals')
+        const page = ctx.session?.withdrawalRequestsPage || 1;
+        const limit = 15;
+        
+        const totalRequests = await db.collection('withdrawals').countDocuments({ status: 'pending' });
+        const totalPages = Math.ceil(totalRequests / limit);
+        const skip = (page - 1) * limit;
+        
+        const requests = await db.collection('withdrawals')
             .find({ status: 'pending' })
             .sort({ createdAt: -1 })
-            .limit(20)
+            .skip(skip)
+            .limit(limit)
             .toArray();
         
-        if (withdrawals.length === 0) {
-            await safeSendMessage(ctx, '❌ No pending withdrawal requests.');
-            return;
+        let requestsText = `💳 *Withdrawal Requests*\n\n`;
+        requestsText += `Page ${page} of ${totalPages}\n`;
+        requestsText += `Pending Requests: ${totalRequests}\n\n`;
+        
+        if (requests.length === 0) {
+            requestsText += `No pending withdrawal requests.\n`;
+        } else {
+            requestsText += `*Pending Requests:*\n\n`;
+            
+            for (let i = 0; i < requests.length; i++) {
+                const request = requests[i];
+                const index = skip + i + 1;
+                const userInfo = request.userInfo || {};
+                const userName = userInfo.username ? `@${userInfo.username}` : 
+                                userInfo.firstName || `User ${request.userId}`;
+                
+                requestsText += `${index}. *${request.requestId}*\n`;
+                requestsText += `   User: ${userName}\n`;
+                requestsText += `   Amount: ${formatCurrency(request.amount)}\n`;
+                requestsText += `   Net: ${formatCurrency(request.netAmount)}\n`;
+                requestsText += `   Wallet: \`${request.wallet}\`\n`;
+                requestsText += `   Date: ${new Date(request.createdAt).toLocaleString()}\n\n`;
+            }
         }
         
-        let text = `<b>📨 Pending Withdrawal Requests</b>\n\n`;
-        text += `Total Pending: ${withdrawals.length}\n\n`;
+        const keyboard = [];
         
-        const keyboard = [
-            [{ text: '🔍 Search Withdrawals', callback_data: 'search_withdrawals' }]
-        ];
-        
-        withdrawals.forEach((withdrawal, index) => {
-            const name = withdrawal.userInfo?.firstName || `User ${withdrawal.userId}`;
+        // Request buttons
+        for (let i = 0; i < requests.length; i++) {
+            const request = requests[i];
             keyboard.push([{ 
-                text: `${index + 1}. ${name} - ${withdrawal.amount} ₹`, 
-                callback_data: `process_withdrawal_${withdrawal.txnId}` 
+                text: `${skip + i + 1}. Process ${request.requestId} - ${formatCurrency(request.amount)}`, 
+                callback_data: `process_withdrawal_${request.requestId}` 
             }]);
-        });
+        }
         
-        keyboard.push([{ text: '🔙 Back to Withdrawals', callback_data: 'admin_withdrawals_menu' }]);
+        // Navigation buttons
+        if (totalPages > 1) {
+            const navRow = [];
+            if (page > 1) {
+                navRow.push({ text: '◀️ Previous', callback_data: `withdrawal_requests_page_${page - 1}` });
+            }
+            navRow.push({ text: `📄 ${page}/${totalPages}`, callback_data: 'no_action' });
+            if (page < totalPages) {
+                navRow.push({ text: 'Next ▶️', callback_data: `withdrawal_requests_page_${page + 1}` });
+            }
+            keyboard.push(navRow);
+        }
         
-        await safeEditMessage(ctx, text, {
+        keyboard.push(
+            [{ text: '🔍 Search Withdrawals', callback_data: 'admin_search_withdrawals' }],
+            [{ text: '🔙 Back', callback_data: 'admin_withdrawal_menu' }]
+        );
+        
+        await safeEditMessage(ctx, requestsText, {
+            parse_mode: 'HTML',
             reply_markup: { inline_keyboard: keyboard }
         });
+        
     } catch (error) {
         console.error('Withdrawal requests error:', error);
-        await ctx.answerCbQuery('❌ Error loading withdrawals');
+        await ctx.answerCbQuery('❌ Error loading withdrawal requests');
     }
 });
 
 // Process Withdrawal
 bot.action(/^process_withdrawal_(.+)$/, async (ctx) => {
     try {
-        const txnId = ctx.match[1];
-        const withdrawal = await db.collection('withdrawals').findOne({ txnId: txnId });
+        const requestId = ctx.match[1];
+        const request = await db.collection('withdrawals').findOne({ requestId: requestId });
         
-        if (!withdrawal) {
-            await ctx.answerCbQuery('❌ Withdrawal not found');
+        if (!request) {
+            await ctx.answerCbQuery('❌ Withdrawal request not found');
             return;
         }
         
-        const user = await db.collection('users').findOne({ userId: withdrawal.userId });
+        const user = await db.collection('users').findOne({ userId: request.userId });
+        const userInfo = request.userInfo || {};
+        const userName = userInfo.username ? `@${userInfo.username}` : 
+                        userInfo.firstName || `User ${request.userId}`;
         
-        let text = `<b>💰 Process Withdrawal</b>\n\n`;
-        text += `📝 Txn ID: <code>${withdrawal.txnId}</code>\n`;
-        text += `👤 User: ${user?.firstName || 'Unknown'} (${withdrawal.userId})\n`;
-        text += `💰 Amount: ${withdrawal.amount} ₹\n`;
-        text += `💳 UPI: <code>${withdrawal.upiId}</code>\n`;
-        text += `📅 Requested: ${new Date(withdrawal.createdAt).toLocaleString()}\n`;
-        text += `📤 Status: ${withdrawal.status}\n\n`;
-        text += `Select an action:`;
+        let requestText = `💳 *Process Withdrawal*\n\n`;
+        requestText += `*Request ID:* \`${request.requestId}\`\n`;
+        requestText += `*User:* ${userName}\n`;
+        requestText += `*User ID:* \`${request.userId}\`\n`;
+        requestText += `*Amount:* ${formatCurrency(request.amount)}\n`;
+        requestText += `*Fee:* ${formatCurrency(request.fee)} (${request.fee/request.amount*100}%)\n`;
+        requestText += `*Net Amount:* ${formatCurrency(request.netAmount)}\n`;
+        requestText += `*Wallet:* \`${request.wallet}\`\n`;
+        requestText += `*Requested:* ${new Date(request.createdAt).toLocaleString()}\n`;
+        requestText += `*User Balance:* ${formatCurrency(user?.balance || 0)}\n\n`;
+        requestText += `Select an action:`;
         
         const keyboard = [
-            [{ text: '✅ Approve & Pay', callback_data: `approve_withdrawal_${txnId}` }],
-            [{ text: '❌ Reject & Refund', callback_data: `reject_withdrawal_${txnId}` }],
-            [{ text: '🔙 Back to Requests', callback_data: 'admin_withdrawal_requests' }]
+            [
+                { text: '✅ Approve', callback_data: `approve_withdrawal_${requestId}` },
+                { text: '❌ Reject', callback_data: `reject_withdrawal_${requestId}` }
+            ],
+            [
+                { text: '🔙 Back', callback_data: 'admin_withdrawal_requests' }
+            ]
         ];
         
-        await safeEditMessage(ctx, text, {
+        await safeEditMessage(ctx, requestText, {
+            parse_mode: 'HTML',
             reply_markup: { inline_keyboard: keyboard }
         });
+        
     } catch (error) {
         console.error('Process withdrawal error:', error);
-        await ctx.answerCbQuery('❌ Error loading withdrawal');
+        await ctx.answerCbQuery('❌ Error loading withdrawal details');
     }
 });
 
 // Approve Withdrawal
 bot.action(/^approve_withdrawal_(.+)$/, async (ctx) => {
     try {
-        const txnId = ctx.match[1];
-        const withdrawal = await db.collection('withdrawals').findOne({ txnId: txnId });
+        const requestId = ctx.match[1];
+        const request = await db.collection('withdrawals').findOne({ requestId: requestId });
         
-        if (!withdrawal) {
-            await ctx.answerCbQuery('❌ Withdrawal not found');
+        if (!request) {
+            await ctx.answerCbQuery('❌ Withdrawal request not found');
             return;
         }
         
         // Generate UTR
-        const utr = 'UTR' + Date.now().toString().slice(-12);
+        const utr = 'UTR' + Date.now() + Math.random().toString(36).substr(2, 10).toUpperCase();
         
-        // Update withdrawal status
+        // Update withdrawal request
         await db.collection('withdrawals').updateOne(
-            { txnId: txnId },
+            { requestId: requestId },
             { 
                 $set: { 
                     status: 'approved',
-                    approvedAt: new Date(),
-                    approvedBy: ctx.from.id,
-                    utr: utr
-                } 
+                    utr: utr,
+                    processedAt: new Date(),
+                    processedBy: ctx.from.id
+                }
             }
         );
+        
+        // Update statistics
+        await db.collection('admin').updateOne(
+            { type: 'config' },
+            { $inc: { 'statistics.totalWithdrawn': request.netAmount } }
+        );
+        
+        // Add transaction record
+        await addTransaction(request.userId, 'withdrawal_approved', -request.amount, `Withdrawal approved #${requestId}, UTR: ${utr}`);
+        
+        await ctx.answerCbQuery('✅ Withdrawal approved');
         
         // Notify user
         try {
             await bot.telegram.sendMessage(
-                withdrawal.userId,
-                `✅ <b>Withdrawal Approved!</b>\n\n📝 Txn ID: <code>${txnId}</code>\n💰 Amount: ${withdrawal.amount} ₹\n🏦 UTR: <code>${utr}</code>\n\nPayment will be processed within 24 hours.`,
+                request.userId,
+                `✅ *Withdrawal Approved!*\n\n` +
+                `*Request ID:* \`${request.requestId}\`\n` +
+                `*Amount:* ${formatCurrency(request.amount)}\n` +
+                `*Net Amount:* ${formatCurrency(request.netAmount)}\n` +
+                `*UTR:* \`${utr}\`\n` +
+                `*Status:* ✅ Approved\n` +
+                `*Processed:* ${new Date().toLocaleString()}\n\n` +
+                `Payment has been processed to your wallet.\n` +
+                `Please check your account.`,
                 { parse_mode: 'HTML' }
             );
         } catch (error) {
             console.error('Failed to notify user:', error);
         }
         
-        await ctx.answerCbQuery('✅ Withdrawal approved!');
-        await safeEditMessage(ctx, `✅ Withdrawal approved!\n\nUTR: <code>${utr}</code>\n\nUser has been notified.`, {
+        // Show success message
+        const successText = `✅ *Withdrawal Approved Successfully!*\n\n`;
+        successText += `*Request ID:* \`${request.requestId}\`\n`;
+        successText += `*UTR:* \`${utr}\`\n`;
+        successText += `*Amount:* ${formatCurrency(request.netAmount)} sent to user\n`;
+        successText += `*Processed by:* ${ctx.from.id}\n`;
+        successText += `*Time:* ${new Date().toLocaleString()}\n\n`;
+        successText += `User has been notified.`;
+        
+        const keyboard = [
+            [{ text: '📋 More Requests', callback_data: 'admin_withdrawal_requests' }],
+            [{ text: '🔙 Back to Admin', callback_data: 'admin_back' }]
+        ];
+        
+        await safeEditMessage(ctx, successText, {
             parse_mode: 'HTML',
-            reply_markup: {
-                inline_keyboard: [[
-                    { text: '🔙 Back to Requests', callback_data: 'admin_withdrawal_requests' }
-                ]]
-            }
+            reply_markup: { inline_keyboard: keyboard }
         });
         
     } catch (error) {
@@ -3457,18 +5099,18 @@ bot.action(/^approve_withdrawal_(.+)$/, async (ctx) => {
 // Reject Withdrawal
 bot.action(/^reject_withdrawal_(.+)$/, async (ctx) => {
     try {
-        const txnId = ctx.match[1];
+        const requestId = ctx.match[1];
         
-        // Store in session for rejection message
-        ctx.session.rejectingWithdrawal = txnId;
+        // Store request ID in session for rejection message
+        ctx.session.rejectingWithdrawal = requestId;
         
-        await safeSendMessage(ctx, '❌ <b>Reject Withdrawal</b>\n\nEnter rejection reason (will be sent to user):\n\nType "cancel" to cancel.', {
+        await safeSendMessage(ctx, 'Enter rejection reason for the user:\n\nType "cancel" to cancel.', {
             parse_mode: 'HTML'
         });
         
     } catch (error) {
         console.error('Reject withdrawal error:', error);
-        await ctx.answerCbQuery('❌ Error');
+        await ctx.answerCbQuery('❌ Error rejecting withdrawal');
     }
 });
 
@@ -3476,7 +5118,7 @@ bot.action(/^reject_withdrawal_(.+)$/, async (ctx) => {
 bot.on('text', async (ctx) => {
     try {
         if (ctx.session?.rejectingWithdrawal && !ctx.message.text?.startsWith('/')) {
-            const txnId = ctx.session.rejectingWithdrawal;
+            const requestId = ctx.session.rejectingWithdrawal;
             
             if (ctx.message.text.toLowerCase() === 'cancel') {
                 await safeSendMessage(ctx, '❌ Rejection cancelled.');
@@ -3484,146 +5126,1696 @@ bot.on('text', async (ctx) => {
                 return;
             }
             
-            const reason = ctx.message.text;
-            const withdrawal = await db.collection('withdrawals').findOne({ txnId: txnId });
+            const request = await db.collection('withdrawals').findOne({ requestId: requestId });
             
-            if (!withdrawal) {
-                await safeSendMessage(ctx, '❌ Withdrawal not found.');
+            if (!request) {
+                await safeSendMessage(ctx, '❌ Withdrawal request not found.');
                 delete ctx.session.rejectingWithdrawal;
                 return;
             }
             
-            // Update withdrawal status
+            const rejectionReason = ctx.message.text;
+            
+            // Update withdrawal request
             await db.collection('withdrawals').updateOne(
-                { txnId: txnId },
+                { requestId: requestId },
                 { 
                     $set: { 
                         status: 'rejected',
-                        rejectedAt: new Date(),
-                        rejectedBy: ctx.from.id,
-                        rejectionReason: reason
-                    } 
+                        adminMessage: rejectionReason,
+                        processedAt: new Date(),
+                        processedBy: ctx.from.id
+                    }
                 }
             );
             
-            // Refund to user balance
-            await addTransaction(withdrawal.userId, withdrawal.amount, 'credit', `Withdrawal refund #${txnId}`);
+            // Refund amount to user
+            await updateUserBalance(request.userId, request.amount, 'add');
+            
+            // Add transaction record
+            await addTransaction(request.userId, 'withdrawal_refund', request.amount, `Withdrawal rejected #${requestId}, Reason: ${rejectionReason}`);
+            
+            delete ctx.session.rejectingWithdrawal;
             
             // Notify user
             try {
                 await bot.telegram.sendMessage(
-                    withdrawal.userId,
-                    `❌ <b>Withdrawal Rejected</b>\n\n📝 Txn ID: <code>${txnId}</code>\n💰 Amount: ${withdrawal.amount} ₹\n📝 Reason: ${reason}\n\nAmount has been refunded to your balance.`,
+                    request.userId,
+                    `❌ *Withdrawal Rejected*\n\n` +
+                    `*Request ID:* \`${request.requestId}\`\n` +
+                    `*Amount:* ${formatCurrency(request.amount)}\n` +
+                    `*Status:* ❌ Rejected\n` +
+                    `*Reason:* ${rejectionReason}\n` +
+                    `*Processed:* ${new Date().toLocaleString()}\n\n` +
+                    `Amount has been refunded to your balance.`,
                     { parse_mode: 'HTML' }
                 );
             } catch (error) {
                 console.error('Failed to notify user:', error);
             }
             
-            await safeSendMessage(ctx, `✅ Withdrawal rejected and amount refunded!\n\nReason sent to user.`, {
-                reply_markup: {
-                    inline_keyboard: [[
-                        { text: '🔙 Back to Requests', callback_data: 'admin_withdrawal_requests' }
-                    ]]
-                }
-            });
+            // Show success message
+            const successText = `❌ *Withdrawal Rejected Successfully!*\n\n`;
+            successText += `*Request ID:* \`${request.requestId}\`\n`;
+            successText += `*Reason:* ${rejectionReason}\n`;
+            successText += `*Amount Refunded:* ${formatCurrency(request.amount)}\n`;
+            successText += `*Processed by:* ${ctx.from.id}\n`;
+            successText += `*Time:* ${new Date().toLocaleString()}\n\n`;
+            successText += `User has been notified and amount refunded.`;
             
-            delete ctx.session.rejectingWithdrawal;
+            const keyboard = [
+                [{ text: '📋 More Requests', callback_data: 'admin_withdrawal_requests' }],
+                [{ text: '🔙 Back to Admin', callback_data: 'admin_back' }]
+            ];
+            
+            await safeSendMessage(ctx, successText, {
+                parse_mode: 'HTML',
+                reply_markup: { inline_keyboard: keyboard }
+            });
         }
     } catch (error) {
         console.error('Handle withdrawal rejection error:', error);
-        await safeSendMessage(ctx, '❌ Error rejecting withdrawal.');
-        delete ctx.session.rejectingWithdrawal;
+        await safeSendMessage(ctx, '❌ Error processing rejection.');
     }
 });
 
 // ==========================================
-// ADMIN - SETTINGS MENU
+// ADMIN FEATURES - ADD TASK
 // ==========================================
 
-bot.action('admin_settings_menu', async (ctx) => {
+bot.action('admin_add_task', async (ctx) => {
     if (!await isAdmin(ctx.from.id)) return;
     
-    const text = '<b>⚙️ Bot Settings</b>\n\nSelect an option:';
-    
-    const keyboard = [
-        [{ text: '⏰ Code Timer', callback_data: 'admin_timer' }],
-        [{ text: '⚙️ Image Overlay', callback_data: 'admin_image_overlay' }],
-        [{ text: '📞 Contact Button', callback_data: 'admin_contact_button' }],
-        [{ text: '🚫 Disable Bot', callback_data: 'admin_disable_bot' }],
-        [{ text: '🔒 Auto Accept', callback_data: 'admin_auto_accept' }],
-        [{ text: '📢 Refer Settings', callback_data: 'admin_refer_settings' }],
-        [{ text: '🖼️ Manage Images', callback_data: 'admin_manage_images' }],
-        [{ text: '📋 HTML Guide', callback_data: 'admin_html_guide' }],
-        [{ text: '🔙 Back to Admin', callback_data: 'admin_back' }]
-    ];
-    
-    await safeEditMessage(ctx, text, {
-        reply_markup: { inline_keyboard: keyboard }
+    await safeSendMessage(ctx, '📋 *Add New Task*\n\nSend task images (maximum 3):\n\nType "cancel" to cancel.', {
+        parse_mode: 'HTML'
     });
+    
+    ctx.session.addingTask = {
+        step: 'images',
+        images: [],
+        screenshotLabels: []
+    };
+    
+    await ctx.scene.enter('add_task_scene');
 });
 
-// Refer Settings
-bot.action('admin_refer_settings', async (ctx) => {
+// Add Task Scene
+scenes.addTask.on(['photo', 'text'], async (ctx) => {
     try {
-        const config = await db.collection('admin').findOne({ type: 'config' });
-        const referBonus = config?.referBonus || DEFAULT_CONFIG.referBonus;
-        const minReferBonus = config?.minReferBonus || DEFAULT_CONFIG.minReferBonus;
-        const maxReferBonus = config?.maxReferBonus || DEFAULT_CONFIG.maxReferBonus;
+        if (!ctx.session.addingTask) {
+            await safeSendMessage(ctx, '❌ Session expired. Please start again.');
+            await ctx.scene.leave();
+            return;
+        }
         
-        const text = `<b>📢 Referral Settings</b>\n\nCurrent Settings:\n• Refer Bonus: ${referBonus} ₹\n• Min Bonus: ${minReferBonus} ₹\n• Max Bonus: ${maxReferBonus} ₹\n\nSelect an option:`;
+        const step = ctx.session.addingTask.step;
+        
+        if (ctx.message.text?.toLowerCase() === 'cancel') {
+            await safeSendMessage(ctx, '❌ Task creation cancelled.');
+            delete ctx.session.addingTask;
+            await ctx.scene.leave();
+            await showAdminPanel(ctx);
+            return;
+        }
+        
+        if (step === 'images') {
+            if (ctx.message.photo) {
+                const photo = ctx.message.photo[ctx.message.photo.length - 1];
+                const fileLink = await ctx.telegram.getFileLink(photo.file_id);
+                
+                ctx.session.addingTask.images.push(fileLink.href);
+                
+                if (ctx.session.addingTask.images.length >= 3) {
+                    ctx.session.addingTask.step = 'message';
+                    await safeSendMessage(ctx, `✅ ${ctx.session.addingTask.images.length} images received.\n\nNow send the task description/message:\n\nType "cancel" to cancel.`);
+                } else {
+                    await safeSendMessage(ctx, `✅ Image ${ctx.session.addingTask.images.length} received. Send more images or type "done" to proceed.`);
+                }
+            } else if (ctx.message.text?.toLowerCase() === 'done' || ctx.session.addingTask.images.length > 0) {
+                if (ctx.session.addingTask.images.length === 0) {
+                    await safeSendMessage(ctx, '❌ Please send at least one image.\n\nType "cancel" to cancel.');
+                    return;
+                }
+                ctx.session.addingTask.step = 'message';
+                await safeSendMessage(ctx, `✅ ${ctx.session.addingTask.images.length} images received.\n\nNow send the task description/message:\n\nType "cancel" to cancel.`);
+            } else {
+                await safeSendMessage(ctx, '❌ Please send images first.\n\nType "cancel" to cancel.');
+            }
+            
+        } else if (step === 'message') {
+            if (!ctx.message.text) {
+                await safeSendMessage(ctx, '❌ Please send task description as text.\n\nType "cancel" to cancel.');
+                return;
+            }
+            
+            ctx.session.addingTask.description = ctx.message.text;
+            ctx.session.addingTask.step = 'screenshotCount';
+            
+            await safeSendMessage(ctx, 'How many screenshots are required for this task? (1-5):\n\nType "cancel" to cancel.');
+            
+        } else if (step === 'screenshotCount') {
+            const screenshotCount = parseInt(ctx.message.text);
+            if (isNaN(screenshotCount) || screenshotCount < 1 || screenshotCount > 5) {
+                await safeSendMessage(ctx, '❌ Please enter a number between 1 and 5.\n\nType "cancel" to cancel.');
+                return;
+            }
+            
+            ctx.session.addingTask.screenshotCount = screenshotCount;
+            ctx.session.addingTask.currentScreenshot = 1;
+            ctx.session.addingTask.step = 'screenshotLabels';
+            
+            await safeSendMessage(ctx, `Enter name/label for screenshot 1/${screenshotCount}:\n\nExample: "Proof of completion", "Payment screenshot", etc.\n\nType "cancel" to cancel.`);
+            
+        } else if (step === 'screenshotLabels') {
+            const currentScreenshot = ctx.session.addingTask.currentScreenshot;
+            const screenshotCount = ctx.session.addingTask.screenshotCount;
+            
+            ctx.session.addingTask.screenshotLabels.push(ctx.message.text);
+            
+            if (currentScreenshot >= screenshotCount) {
+                ctx.session.addingTask.step = 'bonusAmount';
+                await safeSendMessage(ctx, 'Enter bonus amount for this task:\n\nType "cancel" to cancel.');
+            } else {
+                ctx.session.addingTask.currentScreenshot++;
+                await safeSendMessage(ctx, `Enter name/label for screenshot ${ctx.session.addingTask.currentScreenshot}/${screenshotCount}:\n\nType "cancel" to cancel.`);
+            }
+            
+        } else if (step === 'bonusAmount') {
+            const bonusAmount = parseFloat(ctx.message.text);
+            if (isNaN(bonusAmount) || bonusAmount < 1) {
+                await safeSendMessage(ctx, '❌ Please enter a valid bonus amount.\n\nType "cancel" to cancel.');
+                return;
+            }
+            
+            ctx.session.addingTask.bonusAmount = bonusAmount;
+            ctx.session.addingTask.step = 'title';
+            
+            await safeSendMessage(ctx, 'Enter task title:\n\nType "cancel" to cancel.');
+            
+        } else if (step === 'title') {
+            if (!ctx.message.text || ctx.message.text.length < 3) {
+                await safeSendMessage(ctx, '❌ Please enter a valid task title (min 3 characters).\n\nType "cancel" to cancel.');
+                return;
+            }
+            
+            ctx.session.addingTask.title = ctx.message.text;
+            
+            // Create task
+            const taskId = 'TASK' + Date.now() + Math.random().toString(36).substr(2, 6).toUpperCase();
+            const taskData = ctx.session.addingTask;
+            
+            const task = {
+                taskId: taskId,
+                title: taskData.title,
+                description: taskData.description,
+                images: taskData.images,
+                screenshotCount: taskData.screenshotCount,
+                screenshotLabels: taskData.screenshotLabels,
+                bonusAmount: taskData.bonusAmount,
+                isActive: true,
+                createdAt: new Date(),
+                createdBy: ctx.from.id
+            };
+            
+            await db.collection('tasks').insertOne(task);
+            
+            // Update statistics
+            await db.collection('admin').updateOne(
+                { type: 'config' },
+                { $inc: { 'statistics.totalTasks': 1 } }
+            );
+            
+            // Clear session
+            delete ctx.session.addingTask;
+            
+            // Prepare success message
+            let successText = `✅ *Task Created Successfully!*\n\n`;
+            successText += `*Task ID:* \`${taskId}\`\n`;
+            successText += `*Title:* ${task.title}\n`;
+            successText += `*Bonus:* ${formatCurrency(task.bonusAmount)}\n`;
+            successText += `*Screenshots:* ${task.screenshotCount}\n`;
+            successText += `*Status:* ✅ Active\n`;
+            successText += `*Created:* ${new Date().toLocaleString()}\n\n`;
+            successText += `Task is now available for users to complete.`;
+            
+            const keyboard = [
+                [{ text: '📋 View Task', callback_data: `view_admin_task_${taskId}` }],
+                [{ text: '➕ Add Another Task', callback_data: 'admin_add_task' }],
+                [{ text: '🔙 Back to Admin', callback_data: 'admin_back' }]
+            ];
+            
+            await safeSendMessage(ctx, successText, {
+                parse_mode: 'HTML',
+                reply_markup: { inline_keyboard: keyboard }
+            });
+            
+            await ctx.scene.leave();
+        }
+        
+    } catch (error) {
+        console.error('Add task scene error:', error);
+        await safeSendMessage(ctx, '❌ Error creating task. Please try again.');
+        delete ctx.session.addingTask;
+        await ctx.scene.leave();
+    }
+});
+
+// ==========================================
+// ADMIN FEATURES - MANAGE TASKS
+// ==========================================
+
+bot.action('admin_manage_tasks', async (ctx) => {
+    if (!await isAdmin(ctx.from.id)) return;
+    
+    try {
+        const page = ctx.session?.manageTasksPage || 1;
+        const limit = 10;
+        
+        const totalTasks = await db.collection('tasks').countDocuments();
+        const totalPages = Math.ceil(totalTasks / limit);
+        const skip = (page - 1) * limit;
+        
+        const tasks = await db.collection('tasks')
+            .find({})
+            .sort({ createdAt: -1 })
+            .skip(skip)
+            .limit(limit)
+            .toArray();
+        
+        let tasksText = `📋 *Manage Tasks*\n\n`;
+        tasksText += `Page ${page} of ${totalPages}\n`;
+        tasksText += `Total Tasks: ${totalTasks}\n\n`;
+        
+        if (tasks.length === 0) {
+            tasksText += `No tasks found.\n`;
+        } else {
+            tasksText += `*Tasks:*\n\n`;
+            
+            for (let i = 0; i < tasks.length; i++) {
+                const task = tasks[i];
+                const index = skip + i + 1;
+                const status = task.isActive ? '✅ Active' : '❌ Inactive';
+                const submissions = await db.collection('tasksubmissions').countDocuments({ taskId: task.taskId });
+                const approved = await db.collection('tasksubmissions').countDocuments({ 
+                    taskId: task.taskId, 
+                    status: 'approved' 
+                });
+                
+                tasksText += `${index}. *${task.title}*\n`;
+                tasksText += `   ID: \`${task.taskId}\`\n`;
+                tasksText += `   Bonus: ${formatCurrency(task.bonusAmount)}\n`;
+                tasksText += `   Status: ${status}\n`;
+                tasksText += `   Submissions: ${submissions} (${approved} approved)\n\n`;
+            }
+        }
+        
+        const keyboard = [];
+        
+        // Task buttons
+        for (let i = 0; i < tasks.length; i += 2) {
+            const row = [];
+            for (let j = 0; j < 2 && (i + j) < tasks.length; j++) {
+                const task = tasks[i + j];
+                row.push({ 
+                    text: `${skip + i + j + 1}. ${task.title.substring(0, 15)}...`, 
+                    callback_data: `manage_task_${task.taskId}` 
+                });
+            }
+            if (row.length > 0) keyboard.push(row);
+        }
+        
+        // Navigation buttons
+        if (totalPages > 1) {
+            const navRow = [];
+            if (page > 1) {
+                navRow.push({ text: '◀️ Previous', callback_data: `manage_tasks_page_${page - 1}` });
+            }
+            navRow.push({ text: `📄 ${page}/${totalPages}`, callback_data: 'no_action' });
+            if (page < totalPages) {
+                navRow.push({ text: 'Next ▶️', callback_data: `manage_tasks_page_${page + 1}` });
+            }
+            keyboard.push(navRow);
+        }
+        
+        keyboard.push(
+            [{ text: '➕ Add New Task', callback_data: 'admin_add_task' }],
+            [{ text: '🔙 Back', callback_data: 'admin_tasks_menu' }]
+        );
+        
+        await safeEditMessage(ctx, tasksText, {
+            parse_mode: 'HTML',
+            reply_markup: { inline_keyboard: keyboard }
+        });
+        
+    } catch (error) {
+        console.error('Manage tasks error:', error);
+        await ctx.answerCbQuery('❌ Error loading tasks');
+    }
+});
+
+// Manage Task Details
+bot.action(/^manage_task_(.+)$/, async (ctx) => {
+    try {
+        const taskId = ctx.match[1];
+        const task = await db.collection('tasks').findOne({ taskId: taskId });
+        
+        if (!task) {
+            await ctx.answerCbQuery('❌ Task not found');
+            return;
+        }
+        
+        const submissions = await db.collection('tasksubmissions').countDocuments({ taskId: taskId });
+        const pending = await db.collection('tasksubmissions').countDocuments({ 
+            taskId: taskId, 
+            status: 'pending' 
+        });
+        const approved = await db.collection('tasksubmissions').countDocuments({ 
+            taskId: taskId, 
+            status: 'approved' 
+        });
+        
+        let taskText = `📋 *Manage Task*\n\n`;
+        taskText += `*Title:* ${task.title}\n`;
+        taskText += `*ID:* \`${task.taskId}\`\n`;
+        taskText += `*Bonus:* ${formatCurrency(task.bonusAmount)}\n`;
+        taskText += `*Status:* ${task.isActive ? '✅ Active' : '❌ Inactive'}\n`;
+        taskText += `*Screenshots:* ${task.screenshotCount}\n`;
+        taskText += `*Submissions:* ${submissions}\n`;
+        taskText += `*Pending:* ${pending}\n`;
+        taskText += `*Approved:* ${approved}\n`;
+        taskText += `*Created:* ${new Date(task.createdAt).toLocaleString()}\n\n`;
+        taskText += `*Description:*\n${task.description}\n`;
         
         const keyboard = [
-            [{ text: '💰 Set Refer Bonus', callback_data: 'admin_set_refer_bonus' }],
-            [{ text: '🔙 Back to Settings', callback_data: 'admin_settings_menu' }]
+            [
+                { text: task.isActive ? '❌ Deactivate' : '✅ Activate', callback_data: `toggle_task_${taskId}` },
+                { text: '✏️ Edit Task', callback_data: `edit_task_${taskId}` }
+            ],
+            [
+                { text: '💰 Edit Bonus', callback_data: `edit_task_bonus_${taskId}` },
+                { text: '📸 Edit Screenshots', callback_data: `edit_task_screenshots_${taskId}` }
+            ],
+            [
+                { text: '✅ Task Requests', callback_data: `task_requests_${taskId}` }
+            ],
+            [
+                { text: '🗑️ Delete Task', callback_data: `delete_task_${taskId}` }
+            ],
+            [
+                { text: '🔙 Back', callback_data: 'admin_manage_tasks' }
+            ]
         ];
         
+        await safeEditMessage(ctx, taskText, {
+            parse_mode: 'HTML',
+            reply_markup: { inline_keyboard: keyboard }
+        });
+        
+    } catch (error) {
+        console.error('Manage task details error:', error);
+        await ctx.answerCbQuery('❌ Error loading task details');
+    }
+});
+
+// ==========================================
+// ADMIN FEATURES - TASK REQUESTS
+// ==========================================
+
+bot.action('admin_task_requests', async (ctx) => {
+    if (!await isAdmin(ctx.from.id)) return;
+    
+    try {
+        const page = ctx.session?.taskRequestsPage || 1;
+        const limit = 10;
+        
+        const totalRequests = await db.collection('tasksubmissions').countDocuments({ status: 'pending' });
+        const totalPages = Math.ceil(totalRequests / limit);
+        const skip = (page - 1) * limit;
+        
+        const requests = await db.collection('tasksubmissions')
+            .find({ status: 'pending' })
+            .sort({ submittedAt: -1 })
+            .skip(skip)
+            .limit(limit)
+            .toArray();
+        
+        let requestsText = `✅ *Task Submission Requests*\n\n`;
+        requestsText += `Page ${page} of ${totalPages}\n`;
+        requestsText += `Pending Requests: ${totalRequests}\n\n`;
+        
+        if (requests.length === 0) {
+            requestsText += `No pending task submissions.\n`;
+        } else {
+            requestsText += `*Pending Submissions:*\n\n`;
+            
+            for (let i = 0; i < requests.length; i++) {
+                const request = requests[i];
+                const index = skip + i + 1;
+                const userInfo = request.userInfo || {};
+                const userName = userInfo.username ? `@${userInfo.username}` : 
+                                userInfo.firstName || `User ${request.userId}`;
+                
+                requestsText += `${index}. *${request.submissionId}*\n`;
+                requestsText += `   User: ${userName}\n`;
+                requestsText += `   Task: ${request.taskTitle}\n`;
+                requestsText += `   Bonus: ${formatCurrency(request.bonusAmount)}\n`;
+                requestsText += `   Submitted: ${new Date(request.submittedAt).toLocaleString()}\n\n`;
+            }
+        }
+        
+        const keyboard = [];
+        
+        // Request buttons
+        for (let i = 0; i < requests.length; i++) {
+            const request = requests[i];
+            keyboard.push([{ 
+                text: `${skip + i + 1}. Review ${request.submissionId}`, 
+                callback_data: `review_submission_${request.submissionId}` 
+            }]);
+        }
+        
+        // Navigation buttons
+        if (totalPages > 1) {
+            const navRow = [];
+            if (page > 1) {
+                navRow.push({ text: '◀️ Previous', callback_data: `task_requests_page_${page - 1}` });
+            }
+            navRow.push({ text: `📄 ${page}/${totalPages}`, callback_data: 'no_action' });
+            if (page < totalPages) {
+                navRow.push({ text: 'Next ▶️', callback_data: `task_requests_page_${page + 1}` });
+            }
+            keyboard.push(navRow);
+        }
+        
+        keyboard.push(
+            [{ text: '🔙 Back', callback_data: 'admin_tasks_menu' }]
+        );
+        
+        await safeEditMessage(ctx, requestsText, {
+            parse_mode: 'HTML',
+            reply_markup: { inline_keyboard: keyboard }
+        });
+        
+    } catch (error) {
+        console.error('Task requests error:', error);
+        await ctx.answerCbQuery('❌ Error loading task requests');
+    }
+});
+
+// Review Submission
+bot.action(/^review_submission_(.+)$/, async (ctx) => {
+    try {
+        const submissionId = ctx.match[1];
+        const submission = await db.collection('tasksubmissions').findOne({ submissionId: submissionId });
+        
+        if (!submission) {
+            await ctx.answerCbQuery('❌ Submission not found');
+            return;
+        }
+        
+        const user = await db.collection('users').findOne({ userId: submission.userId });
+        const task = await db.collection('tasks').findOne({ taskId: submission.taskId });
+        
+        let reviewText = `✅ *Review Task Submission*\n\n`;
+        reviewText += `*Submission ID:* \`${submission.submissionId}\`\n`;
+        reviewText += `*User:* ${submission.userInfo?.username ? `@${submission.userInfo.username}` : submission.userInfo?.firstName || `User ${submission.userId}`}\n`;
+        reviewText += `*User ID:* \`${submission.userId}\`\n`;
+        reviewText += `*Task:* ${submission.taskTitle}\n`;
+        reviewText += `*Bonus:* ${formatCurrency(submission.bonusAmount)}\n`;
+        reviewText += `*Submitted:* ${new Date(submission.submittedAt).toLocaleString()}\n`;
+        reviewText += `*User Balance:* ${formatCurrency(user?.balance || 0)}\n\n`;
+        reviewText += `*Screenshots Submitted:* ${submission.screenshots.length}\n`;
+        
+        const keyboard = [
+            [
+                { text: '✅ Approve', callback_data: `approve_submission_${submissionId}` },
+                { text: '❌ Reject', callback_data: `reject_submission_${submissionId}` }
+            ],
+            [
+                { text: '📸 View Screenshots', callback_data: `view_submission_screenshots_${submissionId}` }
+            ],
+            [
+                { text: '🔙 Back', callback_data: 'admin_task_requests' }
+            ]
+        ];
+        
+        // Send first screenshot if available
+        if (submission.screenshots.length > 0) {
+            await ctx.replyWithPhoto(submission.screenshots[0], {
+                caption: reviewText,
+                parse_mode: 'HTML',
+                reply_markup: { inline_keyboard: keyboard }
+            });
+        } else {
+            await safeEditMessage(ctx, reviewText, {
+                parse_mode: 'HTML',
+                reply_markup: { inline_keyboard: keyboard }
+            });
+        }
+        
+    } catch (error) {
+        console.error('Review submission error:', error);
+        await ctx.answerCbQuery('❌ Error loading submission');
+    }
+});
+
+// Approve Submission
+bot.action(/^approve_submission_(.+)$/, async (ctx) => {
+    try {
+        const submissionId = ctx.match[1];
+        const submission = await db.collection('tasksubmissions').findOne({ submissionId: submissionId });
+        
+        if (!submission) {
+            await ctx.answerCbQuery('❌ Submission not found');
+            return;
+        }
+        
+        // Update submission
+        await db.collection('tasksubmissions').updateOne(
+            { submissionId: submissionId },
+            { 
+                $set: { 
+                    status: 'approved',
+                    approvedAt: new Date(),
+                    approvedBy: ctx.from.id
+                }
+            }
+        );
+        
+        // Add bonus to user balance
+        await updateUserBalance(submission.userId, submission.bonusAmount, 'add');
+        
+        // Add transaction record
+        await addTransaction(submission.userId, 'task', submission.bonusAmount, `Task completion: ${submission.taskTitle}`);
+        
+        await ctx.answerCbQuery('✅ Submission approved');
+        
+        // Notify user
+        try {
+            await bot.telegram.sendMessage(
+                submission.userId,
+                `✅ *Task Approved!*\n\n` +
+                `*Task:* ${submission.taskTitle}\n` +
+                `*Bonus:* ${formatCurrency(submission.bonusAmount)}\n` +
+                `*Status:* ✅ Approved\n` +
+                `*Approved:* ${new Date().toLocaleString()}\n\n` +
+                `Bonus has been added to your balance.`,
+                { parse_mode: 'HTML' }
+            );
+        } catch (error) {
+            console.error('Failed to notify user:', error);
+        }
+        
+        // Show success message
+        const successText = `✅ *Submission Approved Successfully!*\n\n`;
+        successText += `*Submission ID:* \`${submission.submissionId}\`\n`;
+        successText += `*User:* ${submission.userId}\n`;
+        successText += `*Bonus Added:* ${formatCurrency(submission.bonusAmount)}\n`;
+        successText += `*Approved by:* ${ctx.from.id}\n`;
+        successText += `*Time:* ${new Date().toLocaleString()}\n\n`;
+        successText += `User has been notified and bonus added to their balance.`;
+        
+        const keyboard = [
+            [{ text: '📋 More Requests', callback_data: 'admin_task_requests' }],
+            [{ text: '🔙 Back to Admin', callback_data: 'admin_back' }]
+        ];
+        
+        await safeEditMessage(ctx, successText, {
+            parse_mode: 'HTML',
+            reply_markup: { inline_keyboard: keyboard }
+        });
+        
+    } catch (error) {
+        console.error('Approve submission error:', error);
+        await ctx.answerCbQuery('❌ Error approving submission');
+    }
+});
+
+// Reject Submission
+bot.action(/^reject_submission_(.+)$/, async (ctx) => {
+    try {
+        const submissionId = ctx.match[1];
+        
+        // Store submission ID in session for rejection message
+        ctx.session.rejectingSubmission = submissionId;
+        
+        await safeSendMessage(ctx, 'Enter rejection reason for the user:\n\nType "cancel" to cancel.', {
+            parse_mode: 'HTML'
+        });
+        
+    } catch (error) {
+        console.error('Reject submission error:', error);
+        await ctx.answerCbQuery('❌ Error rejecting submission');
+    }
+});
+
+// Handle submission rejection message
+bot.on('text', async (ctx) => {
+    try {
+        if (ctx.session?.rejectingSubmission && !ctx.message.text?.startsWith('/')) {
+            const submissionId = ctx.session.rejectingSubmission;
+            
+            if (ctx.message.text.toLowerCase() === 'cancel') {
+                await safeSendMessage(ctx, '❌ Rejection cancelled.');
+                delete ctx.session.rejectingSubmission;
+                return;
+            }
+            
+            const submission = await db.collection('tasksubmissions').findOne({ submissionId: submissionId });
+            
+            if (!submission) {
+                await safeSendMessage(ctx, '❌ Submission not found.');
+                delete ctx.session.rejectingSubmission;
+                return;
+            }
+            
+            const rejectionReason = ctx.message.text;
+            
+            // Update submission
+            await db.collection('tasksubmissions').updateOne(
+                { submissionId: submissionId },
+                { 
+                    $set: { 
+                        status: 'rejected',
+                        adminMessage: rejectionReason,
+                        processedAt: new Date(),
+                        processedBy: ctx.from.id
+                    }
+                }
+            );
+            
+            delete ctx.session.rejectingSubmission;
+            
+            // Notify user
+            try {
+                await bot.telegram.sendMessage(
+                    submission.userId,
+                    `❌ *Task Rejected*\n\n` +
+                    `*Task:* ${submission.taskTitle}\n` +
+                    `*Bonus:* ${formatCurrency(submission.bonusAmount)}\n` +
+                    `*Status:* ❌ Rejected\n` +
+                    `*Reason:* ${rejectionReason}\n` +
+                    `*Processed:* ${new Date().toLocaleString()}\n\n` +
+                    `Please review the task requirements and try again.`,
+                    { parse_mode: 'HTML' }
+                );
+            } catch (error) {
+                console.error('Failed to notify user:', error);
+            }
+            
+            // Show success message
+            const successText = `❌ *Submission Rejected Successfully!*\n\n`;
+            successText += `*Submission ID:* \`${submission.submissionId}\`\n`;
+            successText += `*Reason:* ${rejectionReason}\n`;
+            successText += `*Processed by:* ${ctx.from.id}\n`;
+            successText += `*Time:* ${new Date().toLocaleString()}\n\n`;
+            successText += `User has been notified.`;
+            
+            const keyboard = [
+                [{ text: '📋 More Requests', callback_data: 'admin_task_requests' }],
+                [{ text: '🔙 Back to Admin', callback_data: 'admin_back' }]
+            ];
+            
+            await safeSendMessage(ctx, successText, {
+                parse_mode: 'HTML',
+                reply_markup: { inline_keyboard: keyboard }
+            );
+        }
+    } catch (error) {
+        console.error('Handle submission rejection error:', error);
+        await safeSendMessage(ctx, '❌ Error processing rejection.');
+    }
+});
+
+// ==========================================
+// ADMIN FEATURES - TASK HISTORY
+// ==========================================
+
+bot.action('admin_task_history', async (ctx) => {
+    if (!await isAdmin(ctx.from.id)) return;
+    
+    try {
+        const page = ctx.session?.taskHistoryPage || 1;
+        const limit = 10;
+        
+        const totalSubmissions = await db.collection('tasksubmissions').countDocuments();
+        const totalPages = Math.ceil(totalSubmissions / limit);
+        const skip = (page - 1) * limit;
+        
+        const submissions = await db.collection('tasksubmissions')
+            .find({})
+            .sort({ submittedAt: -1 })
+            .skip(skip)
+            .limit(limit)
+            .toArray();
+        
+        let historyText = `📊 *Task Submission History*\n\n`;
+        historyText += `Page ${page} of ${totalPages}\n`;
+        historyText += `Total Submissions: ${totalSubmissions}\n\n`;
+        
+        if (submissions.length === 0) {
+            historyText += `No task submissions found.\n`;
+        } else {
+            historyText += `*Submissions:*\n\n`;
+            
+            for (let i = 0; i < submissions.length; i++) {
+                const submission = submissions[i];
+                const index = skip + i + 1;
+                const userInfo = submission.userInfo || {};
+                const userName = userInfo.username ? `@${userInfo.username}` : 
+                                userInfo.firstName || `User ${submission.userId}`;
+                const statusEmoji = submission.status === 'approved' ? '✅' : 
+                                   submission.status === 'rejected' ? '❌' : '⏳';
+                
+                historyText += `${index}. *${submission.submissionId}*\n`;
+                historyText += `   User: ${userName}\n`;
+                historyText += `   Task: ${submission.taskTitle}\n`;
+                historyText += `   Status: ${statusEmoji} ${submission.status}\n`;
+                historyText += `   Bonus: ${formatCurrency(submission.bonusAmount)}\n`;
+                historyText += `   Submitted: ${new Date(submission.submittedAt).toLocaleDateString()}\n\n`;
+            }
+        }
+        
+        const keyboard = [];
+        
+        // Navigation buttons
+        if (totalPages > 1) {
+            const navRow = [];
+            if (page > 1) {
+                navRow.push({ text: '◀️ Previous', callback_data: `task_history_admin_page_${page - 1}` });
+            }
+            navRow.push({ text: `📄 ${page}/${totalPages}`, callback_data: 'no_action' });
+            if (page < totalPages) {
+                navRow.push({ text: 'Next ▶️', callback_data: `task_history_admin_page_${page + 1}` });
+            }
+            keyboard.push(navRow);
+        }
+        
+        keyboard.push(
+            [{ text: '🔙 Back', callback_data: 'admin_tasks_menu' }]
+        );
+        
+        await safeEditMessage(ctx, historyText, {
+            parse_mode: 'HTML',
+            reply_markup: { inline_keyboard: keyboard }
+        });
+        
+    } catch (error) {
+        console.error('Task history error:', error);
+        await ctx.answerCbQuery('❌ Error loading task history');
+    }
+});
+
+// ==========================================
+// ADMIN FEATURES - ADD CHANNEL
+// ==========================================
+
+bot.action('admin_add_channel', async (ctx) => {
+    if (!await isAdmin(ctx.from.id)) return;
+    
+    await safeSendMessage(ctx, '📺 *Add New Channel*\n\nEnter channel button name (e.g., "Join Main Channel"):\n\nType "cancel" to cancel.', {
+        parse_mode: 'HTML'
+    });
+    await ctx.scene.enter('add_channel_scene');
+});
+
+// Add Channel Scene
+scenes.addChannel.on('text', async (ctx) => {
+    try {
+        if (!ctx.session.addingChannel) {
+            ctx.session.addingChannel = {
+                step: 'name'
+            };
+        }
+        
+        const step = ctx.session.addingChannel.step;
+        
+        if (ctx.message.text.toLowerCase() === 'cancel') {
+            await safeSendMessage(ctx, '❌ Channel addition cancelled.');
+            delete ctx.session.addingChannel;
+            await ctx.scene.leave();
+            await showAdminPanel(ctx);
+            return;
+        }
+        
+        if (step === 'name') {
+            ctx.session.addingChannel.buttonLabel = ctx.message.text;
+            ctx.session.addingChannel.step = 'id';
+            
+            await safeSendMessage(ctx, 'Now send the channel ID (e.g., @channelusername or -1001234567890):\n\nType "cancel" to cancel.');
+            
+        } else if (step === 'id') {
+            const channelIdentifier = ctx.message.text.trim();
+            let channelId, channelTitle;
+            
+            try {
+                // Try to get chat info
+                const chat = await ctx.telegram.getChat(channelIdentifier);
+                channelId = chat.id;
+                channelTitle = chat.title || 'Unknown Channel';
+                
+                // Check if it's a channel/supergroup
+                if (chat.type !== 'channel' && chat.type !== 'supergroup') {
+                    await safeSendMessage(ctx, '❌ This is not a channel or supergroup.');
+                    return;
+                }
+                
+            } catch (error) {
+                await safeSendMessage(ctx, '❌ Cannot access this channel. Make sure:\n1. The bot is added to the channel\n2. Channel ID is correct\n3. For private channels, use the -100 format');
+                return;
+            }
+            
+            ctx.session.addingChannel.id = channelId;
+            ctx.session.addingChannel.title = channelTitle;
+            ctx.session.addingChannel.step = 'link';
+            
+            await safeSendMessage(ctx, 'Now send the channel link (e.g., https://t.me/channelusername or https://t.me/joinchat/xxxxxx):\n\nType "cancel" to cancel.');
+            
+        } else if (step === 'link') {
+            const link = ctx.message.text.trim();
+            
+            // Validate link
+            if (!link.startsWith('https://t.me/')) {
+                await safeSendMessage(ctx, '❌ Invalid Telegram link. Must start with https://t.me/');
+                return;
+            }
+            
+            ctx.session.addingChannel.link = link;
+            
+            // Detect channel type from link
+            if (link.includes('joinchat/') || link.includes('+')) {
+                ctx.session.addingChannel.type = 'private';
+            } else {
+                ctx.session.addingChannel.type = 'public';
+            }
+            
+            ctx.session.addingChannel.step = 'level';
+            
+            // Show level options
+            const levelText = `Select channel level:\n\n`;
+            levelText += `*F* - Hidden (won't show to users)\n`;
+            levelText += `*S* - Show Only (shows but doesn't require joining)\n`;
+            levelText += `*SS* - Auto Accept (shows and auto-accepts join requests)\n`;
+            levelText += `*SSS* - Must Join (shows and requires joining)\n\n`;
+            levelText += `Enter F, S, SS, or SSS:`;
+            
+            const keyboard = [
+                [
+                    { text: 'F - Hidden', callback_data: 'set_channel_level_F' },
+                    { text: 'S - Show Only', callback_data: 'set_channel_level_S' }
+                ],
+                [
+                    { text: 'SS - Auto Accept', callback_data: 'set_channel_level_SS' },
+                    { text: 'SSS - Must Join', callback_data: 'set_channel_level_SSS' }
+                ]
+            ];
+            
+            await safeSendMessage(ctx, levelText, {
+                parse_mode: 'HTML',
+                reply_markup: { inline_keyboard: keyboard }
+            });
+            
+        }
+        
+    } catch (error) {
+        console.error('Add channel scene error:', error);
+        await safeSendMessage(ctx, '❌ Error adding channel. Please try again.');
+        delete ctx.session.addingChannel;
+        await ctx.scene.leave();
+    }
+});
+
+// Set Channel Level Callbacks
+bot.action(/^set_channel_level_(.+)$/, async (ctx) => {
+    try {
+        const level = ctx.match[1];
+        
+        if (!ctx.session.addingChannel) {
+            await ctx.answerCbQuery('❌ Session expired');
+            return;
+        }
+        
+        ctx.session.addingChannel.level = level;
+        
+        // Create channel object
+        const channelData = ctx.session.addingChannel;
+        const newChannel = {
+            id: channelData.id,
+            title: channelData.title,
+            buttonLabel: channelData.buttonLabel,
+            link: channelData.link,
+            type: channelData.type,
+            level: level,
+            hide: level === 'F',
+            verify: level === 'SSS',
+            autoAccept: level === 'SS',
+            addedAt: new Date()
+        };
+        
+        // Add to database
+        await db.collection('admin').updateOne(
+            { type: 'config' },
+            { $push: { channels: newChannel } }
+        );
+        
+        // Clear session
+        delete ctx.session.addingChannel;
+        
+        await ctx.answerCbQuery(`✅ Channel added with level ${level}`);
+        
+        // Show success message
+        const successText = `✅ *Channel Added Successfully!*\n\n`;
+        successText += `*Name:* ${newChannel.buttonLabel}\n`;
+        successText += `*Title:* ${newChannel.title}\n`;
+        successText += `*ID:* \`${newChannel.id}\`\n`;
+        successText += `*Link:* ${newChannel.link}\n`;
+        successText += `*Type:* ${newChannel.type === 'private' ? '🔒 Private' : '🔓 Public'}\n`;
+        successText += `*Level:* ${level}\n`;
+        successText += `*Hide:* ${newChannel.hide ? '✅ Yes' : '❌ No'}\n`;
+        successText += `*Verify:* ${newChannel.verify ? '✅ Yes' : '❌ No'}\n`;
+        successText += `*Auto Accept:* ${newChannel.autoAccept ? '✅ Yes' : '❌ No'}\n\n`;
+        successText += `Channel is now available for users.`;
+        
+        const keyboard = [
+            [{ text: '➕ Add Another Channel', callback_data: 'admin_add_channel' }],
+            [{ text: '📋 Manage Channels', callback_data: 'admin_channels' }],
+            [{ text: '🔙 Back to Admin', callback_data: 'admin_back' }]
+        ];
+        
+        await safeEditMessage(ctx, successText, {
+            parse_mode: 'HTML',
+            reply_markup: { inline_keyboard: keyboard }
+        });
+        
+    } catch (error) {
+        console.error('Set channel level error:', error);
+        await ctx.answerCbQuery('❌ Error adding channel');
+    }
+});
+
+// ==========================================
+// ADMIN FEATURES - MANAGE CHANNELS
+// ==========================================
+
+bot.action('admin_channels', async (ctx) => {
+    if (!await isAdmin(ctx.from.id)) return;
+    
+    try {
+        const config = await db.collection('admin').findOne({ type: 'config' });
+        const channels = config?.channels || [];
+        
+        let text = '📺 *Manage Channels*\n\n';
+        
+        if (channels.length === 0) {
+            text += 'No channels added yet.\n';
+        } else {
+            channels.forEach((channel, index) => {
+                const levelEmoji = channel.level === 'F' ? '👁️' : 
+                                 channel.level === 'S' ? '👀' : 
+                                 channel.level === 'SS' ? '✅' : '🔒';
+                const typeEmoji = channel.type === 'private' ? '🔒' : '🔓';
+                text += `${index + 1}. ${levelEmoji} ${typeEmoji} ${channel.buttonLabel || channel.title} (${channel.level || 'No level'})\n`;
+            });
+        }
+        
+        text += '\nSelect an option:';
+        
+        const keyboard = [
+            [{ text: '➕ Add Channel', callback_data: 'admin_add_channel' }],
+            channels.length > 0 ? [{ text: '🗑️ Delete Channel', callback_data: 'admin_delete_channel' }] : [],
+            channels.length > 0 ? [{ text: '👁️ Channel Levels', callback_data: 'admin_channel_levels' }] : [],
+            [{ text: '🔙 Back', callback_data: 'admin_channels_menu' }]
+        ].filter(row => row.length > 0);
+        
         await safeEditMessage(ctx, text, {
+            parse_mode: 'HTML',
             reply_markup: { inline_keyboard: keyboard }
         });
     } catch (error) {
-        console.error('Refer settings error:', error);
+        console.error('Channels menu error:', error);
+        await safeSendMessage(ctx, '❌ An error occurred.');
+    }
+});
+
+// Channel Levels Management
+bot.action('admin_channel_levels', async (ctx) => {
+    if (!await isAdmin(ctx.from.id)) return;
+    
+    try {
+        const text = '👁️ *Channel Levels Management*\n\nSelect an option:';
+        
+        const keyboard = [
+            [
+                { text: '👁️ Hide Channels (F)', callback_data: 'admin_hide_channels' },
+                { text: '👀 Just Show (S)', callback_data: 'admin_show_channels' }
+            ],
+            [
+                { text: '✅ Auto Accept (SS)', callback_data: 'admin_auto_accept_channels' },
+                { text: '🔒 Need Join (SSS)', callback_data: 'admin_need_join_channels' }
+            ],
+            [
+                { text: '🔙 Back', callback_data: 'admin_channels' }
+            ]
+        ];
+        
+        await safeEditMessage(ctx, text, {
+            parse_mode: 'HTML',
+            reply_markup: { inline_keyboard: keyboard }
+        });
+    } catch (error) {
+        console.error('Channel levels menu error:', error);
+        await ctx.answerCbQuery('❌ Error');
+    }
+});
+
+// ==========================================
+// ADMIN FEATURES - MANAGE ADMINS
+// ==========================================
+
+bot.action('admin_manage_admins', async (ctx) => {
+    if (!await isAdmin(ctx.from.id)) return;
+    
+    try {
+        const config = await db.collection('admin').findOne({ type: 'config' });
+        const admins = config?.admins || ADMIN_IDS;
+        const mutedAdmins = config?.mutedAdmins || [];
+        
+        let text = '👑 *Manage Admins*\n\nCurrent Admins:\n';
+        
+        admins.forEach((adminId, index) => {
+            const isMuted = mutedAdmins.includes(adminId);
+            const status = isMuted ? '🔕' : '🔔';
+            text += `${index + 1}. ${status} \`${adminId}\`\n`;
+        });
+        
+        text += '\nSelect an option:';
+        
+        const keyboard = [
+            [{ text: '➕ Add Admin', callback_data: 'admin_add_admin' }, { text: '🗑️ Remove Admin', callback_data: 'admin_remove_admin' }],
+            [{ text: '🔙 Back', callback_data: 'admin_admins_menu' }]
+        ];
+        
+        await safeEditMessage(ctx, text, {
+            parse_mode: 'HTML',
+            reply_markup: { inline_keyboard: keyboard }
+        });
+    } catch (error) {
+        console.error('Manage admins menu error:', error);
+        await safeSendMessage(ctx, '❌ An error occurred.');
+    }
+});
+
+// Add Admin Scene
+scenes.addAdmin.on('text', async (ctx) => {
+    try {
+        if (ctx.message.text.toLowerCase() === 'cancel') {
+            await safeSendMessage(ctx, '❌ Add cancelled.');
+            await ctx.scene.leave();
+            await showAdminPanel(ctx);
+            return;
+        }
+        
+        const newAdminId = parseInt(ctx.message.text);
+        if (isNaN(newAdminId)) {
+            await safeSendMessage(ctx, '❌ Invalid user ID. Please enter a numeric ID.');
+            return;
+        }
+        
+        const config = await db.collection('admin').findOne({ type: 'config' });
+        const currentAdmins = config?.admins || ADMIN_IDS;
+        
+        if (currentAdmins.includes(newAdminId)) {
+            await safeSendMessage(ctx, '❌ This user is already an admin.');
+            await ctx.scene.leave();
+            await showAdminPanel(ctx);
+            return;
+        }
+        
+        const updatedAdmins = [...currentAdmins, newAdminId];
+        await db.collection('admin').updateOne(
+            { type: 'config' },
+            { $set: { admins: updatedAdmins, updatedAt: new Date() } }
+        );
+        
+        await safeSendMessage(ctx, `✅ Admin added successfully!\n\nNew admin ID: \`${newAdminId}\``, {
+            parse_mode: 'HTML'
+        });
+        
+        await ctx.scene.leave();
+        await showAdminPanel(ctx);
+        
+    } catch (error) {
+        console.error('Add admin error:', error);
+        await safeSendMessage(ctx, '❌ Failed to add admin.');
+        await ctx.scene.leave();
+    }
+});
+
+// ==========================================
+// ADMIN FEATURES - TIMER SETTINGS
+// ==========================================
+
+bot.action('admin_timer', async (ctx) => {
+    if (!await isAdmin(ctx.from.id)) return;
+    
+    try {
+        const config = await db.collection('admin').findOne({ type: 'config' });
+        const currentTimer = config?.codeTimer || DEFAULT_CONFIG.codeTimer;
+        const hours = Math.floor(currentTimer / 3600);
+        
+        const text = `⏰ *Code Timer Settings*\n\nCurrent timer: *${hours} hours*\n\nSelect an option:`;
+        
+        const keyboard = [
+            [{ text: '2 Hours', callback_data: 'timer_2' }, { text: '4 Hours', callback_data: 'timer_4' }],
+            [{ text: '6 Hours', callback_data: 'timer_6' }, { text: '12 Hours', callback_data: 'timer_12' }],
+            [{ text: '24 Hours', callback_data: 'timer_24' }, { text: '✏️ Custom', callback_data: 'timer_custom' }],
+            [{ text: '🔙 Back', callback_data: 'admin_settings_menu' }]
+        ];
+        
+        await safeEditMessage(ctx, text, {
+            parse_mode: 'HTML',
+            reply_markup: { inline_keyboard: keyboard }
+        });
+    } catch (error) {
+        console.error('Timer menu error:', error);
+        await safeSendMessage(ctx, '❌ An error occurred.');
+    }
+});
+
+// Timer handlers
+['2', '4', '6', '12', '24'].forEach(hours => {
+    bot.action(`timer_${hours}`, async (ctx) => {
+        try {
+            const seconds = parseInt(hours) * 3600;
+            await db.collection('admin').updateOne(
+                { type: 'config' },
+                { $set: { codeTimer: seconds, updatedAt: new Date() } }
+            );
+            
+            await ctx.answerCbQuery(`✅ Timer set to ${hours} hours`);
+            await showAdminPanel(ctx);
+        } catch (error) {
+            console.error(`Set timer ${hours} error:`, error);
+            await ctx.answerCbQuery('❌ Failed to set timer');
+        }
+    });
+});
+
+bot.action('timer_custom', async (ctx) => {
+    await safeSendMessage(ctx, 'Enter timer in hours (e.g., 3 for 3 hours):\n\nType "cancel" to cancel.');
+    await ctx.scene.enter('edit_timer_scene');
+});
+
+scenes.editTimer.on('text', async (ctx) => {
+    try {
+        if (ctx.message.text.toLowerCase() === 'cancel') {
+            await safeSendMessage(ctx, '❌ Edit cancelled.');
+            await ctx.scene.leave();
+            await showAdminPanel(ctx);
+            return;
+        }
+        
+        const hours = parseInt(ctx.message.text);
+        if (isNaN(hours) || hours < 1) {
+            await safeSendMessage(ctx, '❌ Please enter a valid number of hours (minimum 1).');
+            return;
+        }
+        
+        const seconds = hours * 3600;
+        await db.collection('admin').updateOne(
+            { type: 'config' },
+            { $set: { codeTimer: seconds, updatedAt: new Date() } }
+        );
+        
+        await safeSendMessage(ctx, `✅ Timer set to ${hours} hours`);
+        await ctx.scene.leave();
+        await showAdminPanel(ctx);
+    } catch (error) {
+        console.error('Edit timer error:', error);
+        await safeSendMessage(ctx, '❌ Failed to set timer.');
+        await ctx.scene.leave();
+    }
+});
+
+// ==========================================
+// ADMIN FEATURES - CONTACT BUTTON
+// ==========================================
+
+bot.action('admin_contact_button', async (ctx) => {
+    if (!await isAdmin(ctx.from.id)) return;
+    
+    try {
+        const config = await db.collection('admin').findOne({ type: 'config' });
+        const showContactButton = config?.showContactButton !== false;
+        
+        const text = `📞 *Contact Button Settings*\n\nCurrent status: ${showContactButton ? '✅ SHOWN to users' : '❌ HIDDEN from users'}\n\nSelect an option:`;
+        
+        const keyboard = [
+            [
+                { text: showContactButton ? '✅ Currently Shown' : '❌ Currently Hidden', callback_data: 'toggle_contact_button' }
+            ],
+            [
+                { text: showContactButton ? '❌ Hide from Users' : '✅ Show to Users', callback_data: 'set_contact_button' }
+            ],
+            [{ text: '🔙 Back', callback_data: 'admin_settings_menu' }]
+        ];
+        
+        await safeEditMessage(ctx, text, {
+            parse_mode: 'HTML',
+            reply_markup: { inline_keyboard: keyboard }
+        });
+    } catch (error) {
+        console.error('Contact button menu error:', error);
+        await safeSendMessage(ctx, '❌ An error occurred.');
+    }
+});
+
+// Toggle contact button
+bot.action('toggle_contact_button', async (ctx) => {
+    try {
+        const config = await db.collection('admin').findOne({ type: 'config' });
+        const currentSetting = config?.showContactButton !== false;
+        
+        const newSetting = !currentSetting;
+        
+        await db.collection('admin').updateOne(
+            { type: 'config' },
+            { $set: { showContactButton: newSetting, updatedAt: new Date() } }
+        );
+        
+        await ctx.answerCbQuery(`✅ Contact button ${newSetting ? 'shown' : 'hidden'} to users`);
+        await bot.action('admin_contact_button')(ctx);
+    } catch (error) {
+        console.error('Toggle contact button error:', error);
+        await ctx.answerCbQuery('❌ Failed to update setting');
+    }
+});
+
+// ==========================================
+// ADMIN FEATURES - DISABLE BOT
+// ==========================================
+
+bot.action('admin_disable_bot', async (ctx) => {
+    if (!await isAdmin(ctx.from.id)) return;
+    
+    try {
+        const config = await db.collection('admin').findOne({ type: 'config' });
+        const botDisabled = config?.botDisabled || false;
+        const disabledMessage = config?.disabledMessage || DEFAULT_CONFIG.disabledMessage;
+        
+        const text = `🚫 *Bot Status Control*\n\nCurrent status: ${botDisabled ? '❌ DISABLED' : '✅ ENABLED'}\n\nWhen disabled, users will see this message:\n${formatHTMLForDisplay(disabledMessage, true)}\n\nSelect an option:`;
+        
+        const keyboard = [
+            [
+                { text: botDisabled ? '❌ Currently Disabled' : '✅ Currently Enabled', callback_data: 'toggle_bot_status' }
+            ],
+            [
+                { text: botDisabled ? '✅ Enable Bot' : '❌ Disable Bot', callback_data: 'set_bot_status' }
+            ],
+            [
+                { text: '✏️ Edit Disabled Message', callback_data: 'edit_disabled_message' }
+            ],
+            [{ text: '🔙 Back', callback_data: 'admin_settings_menu' }]
+        ];
+        
+        await safeEditMessage(ctx, text, {
+            parse_mode: 'HTML',
+            reply_markup: { inline_keyboard: keyboard }
+        });
+    } catch (error) {
+        console.error('Disable bot menu error:', error);
+        await safeSendMessage(ctx, '❌ An error occurred.');
+    }
+});
+
+// Toggle bot status
+bot.action('toggle_bot_status', async (ctx) => {
+    try {
+        const config = await db.collection('admin').findOne({ type: 'config' });
+        const currentStatus = config?.botDisabled || false;
+        
+        const newStatus = !currentStatus;
+        
+        await db.collection('admin').updateOne(
+            { type: 'config' },
+            { $set: { botDisabled: newStatus, updatedAt: new Date() } }
+        );
+        
+        await ctx.answerCbQuery(`✅ Bot ${newStatus ? 'disabled' : 'enabled'}`);
+        await bot.action('admin_disable_bot')(ctx);
+    } catch (error) {
+        console.error('Toggle bot status error:', error);
+        await ctx.answerCbQuery('❌ Failed to update status');
+    }
+});
+
+// ==========================================
+// ADMIN FEATURES - AUTO ACCEPT REQUESTS
+// ==========================================
+
+bot.action('admin_auto_accept', async (ctx) => {
+    if (!await isAdmin(ctx.from.id)) return;
+    
+    try {
+        const config = await db.collection('admin').findOne({ type: 'config' });
+        const autoAccept = config?.autoAcceptRequests !== false;
+        
+        const text = `🔒 *Auto Accept Join Requests*\n\nGlobal setting: ${autoAccept ? '✅ ENABLED' : '❌ DISABLED'}\n\nWhen enabled, bot will automatically approve join requests for private channels.\n\nSelect an option:`;
+        
+        const keyboard = [
+            [
+                { text: autoAccept ? '✅ Global: Enabled' : '❌ Global: Disabled', callback_data: 'toggle_auto_accept' }
+            ],
+            [{ text: '🔙 Back', callback_data: 'admin_settings_menu' }]
+        ];
+        
+        await safeEditMessage(ctx, text, {
+            parse_mode: 'HTML',
+            reply_markup: { inline_keyboard: keyboard }
+        });
+    } catch (error) {
+        console.error('Auto accept menu error:', error);
+        await safeSendMessage(ctx, '❌ An error occurred.');
+    }
+});
+
+// Toggle global auto accept
+bot.action('toggle_auto_accept', async (ctx) => {
+    try {
+        const config = await db.collection('admin').findOne({ type: 'config' });
+        const currentSetting = config?.autoAcceptRequests !== false;
+        
+        const newSetting = !currentSetting;
+        
+        await db.collection('admin').updateOne(
+            { type: 'config' },
+            { $set: { autoAcceptRequests: newSetting, updatedAt: new Date() } }
+        );
+        
+        await ctx.answerCbQuery(`✅ Auto accept ${newSetting ? 'enabled' : 'disabled'}`);
+        await bot.action('admin_auto_accept')(ctx);
+    } catch (error) {
+        console.error('Toggle auto accept error:', error);
+        await ctx.answerCbQuery('❌ Failed to update setting');
+    }
+});
+
+// ==========================================
+// ADMIN FEATURES - MUTE NOTIFICATIONS
+// ==========================================
+
+bot.action('admin_mute_notifications', async (ctx) => {
+    if (!await isAdmin(ctx.from.id)) return;
+    
+    try {
+        const adminId = ctx.from.id;
+        const config = await db.collection('admin').findOne({ type: 'config' });
+        const mutedAdmins = config?.mutedAdmins || [];
+        const isMuted = mutedAdmins.includes(adminId);
+        
+        const text = `🔕 *Mute Notifications*\n\nCurrent status: ${isMuted ? '🔕 MUTED' : '🔔 ACTIVE'}\n\nWhen muted, you will NOT receive:\n• Contact messages from users\n• Join request notifications\n• Error reports\n• Broadcast confirmations\n• Other admin notifications\n\nSelect an option:`;
+        
+        const keyboard = [
+            [
+                { text: isMuted ? '🔕 Currently Muted' : '🔔 Currently Active', callback_data: 'toggle_mute_status' }
+            ],
+            [
+                { text: isMuted ? '🔔 Unmute Notifications' : '🔕 Mute Notifications', callback_data: 'set_mute_status' }
+            ],
+            [{ text: '🔙 Back', callback_data: 'admin_settings_menu' }]
+        ];
+        
+        await safeEditMessage(ctx, text, {
+            parse_mode: 'HTML',
+            reply_markup: { inline_keyboard: keyboard }
+        });
+    } catch (error) {
+        console.error('Mute notifications menu error:', error);
+        await safeSendMessage(ctx, '❌ An error occurred.');
+    }
+});
+
+// Toggle mute status
+bot.action('toggle_mute_status', async (ctx) => {
+    try {
+        const adminId = ctx.from.id;
+        const config = await db.collection('admin').findOne({ type: 'config' });
+        const mutedAdmins = config?.mutedAdmins || [];
+        const isMuted = mutedAdmins.includes(adminId);
+        
+        const newMutedAdmins = isMuted 
+            ? mutedAdmins.filter(id => id !== adminId)
+            : [...mutedAdmins, adminId];
+        
+        await db.collection('admin').updateOne(
+            { type: 'config' },
+            { $set: { mutedAdmins: newMutedAdmins, updatedAt: new Date() } }
+        );
+        
+        await ctx.answerCbQuery(`✅ Notifications ${isMuted ? 'unmuted' : 'muted'}`);
+        await bot.action('admin_mute_notifications')(ctx);
+    } catch (error) {
+        console.error('Toggle mute status error:', error);
+        await ctx.answerCbQuery('❌ Failed to update setting');
+    }
+});
+
+// ==========================================
+// ADMIN FEATURES - HTML GUIDE
+// ==========================================
+
+bot.action('admin_html_guide', async (ctx) => {
+    if (!await isAdmin(ctx.from.id)) return;
+    
+    try {
+        const htmlGuide = `<b>📋 HTML Formatting Guide</b>
+
+Telegram supports HTML formatting in messages. Here are all available tags:
+
+<b>1. &lt;b&gt;bold&lt;/b&gt;, &lt;strong&gt;bold&lt;/strong&gt;</b>
+Example: This is <b>bold text</b>
+Copy: <code>&lt;b&gt;bold text&lt;/b&gt;</code>
+
+<b>2. &lt;i&gt;italic&lt;/i&gt;, &lt;em&gt;italic&lt;/em&gt;</b>
+Example: This is <i>italic text</i>
+Copy: <code>&lt;i&gt;italic text&lt;/i&gt;</code>
+
+<b>3. &lt;u&gt;underline&lt;/u&gt;, &lt;ins&gt;underline&lt;/ins&gt;</b>
+Example: This is <u>underlined text</u>
+Copy: <code>&lt;u&gt;underlined text&lt;/u&gt;</code>
+
+<b>4. &lt;s&gt;strikethrough&lt;/s&gt;, &lt;strike&gt;strikethrough&lt;/strike&gt;, &lt;del&gt;strikethrough&lt;/del&gt;</b>
+Example: This is <s>strikethrough text</s>
+Copy: <code>&lt;s&gt;strikethrough text&lt;/s&gt;</code>
+
+<b>5. &lt;span class="tg-spoiler"&gt;spoiler&lt;/span&gt;, &lt;tg-spoiler&gt;spoiler&lt;/tg-spoiler&gt;</b>
+Example: This is <span class="tg-spoiler">spoiler text</span>
+Copy: <code>&lt;span class="tg-spoiler"&gt;spoiler text&lt;/span&gt;</code>
+
+<b>6. &lt;code&gt;inline code&lt;/code&gt;</b>
+Example: This is <code>inline code</code>
+Copy: <code>&lt;code&gt;inline code&lt;/code&gt;</code>
+
+<b>7. &lt;pre&gt;pre-formatted code block&lt;/pre&gt;</b>
+Example: <pre>function hello() {
+  console.log("Hello");
+}</pre>
+Copy: <code>&lt;pre&gt;Your code here&lt;/pre&gt;</code>
+
+<b>8. &lt;pre&gt;&lt;code class="language-python"&gt;language-specific code&lt;/code&gt;&lt;/pre&gt;</b>
+Example: <pre><code class="language-python">def hello():
+    print("Hello")</code></pre>
+Copy: <code>&lt;pre&gt;&lt;code class="language-python"&gt;Your code here&lt;/code&gt;&lt;/pre&gt;</code>
+
+<b>9. &lt;a href="http://example.com"&gt;link text&lt;/a&gt;</b>
+Example: Visit <a href="https://telegram.org">Telegram</a>
+Copy: <code>&lt;a href="https://example.com"&gt;Link Text&lt;/a&gt;</code>
+
+<b>10. &lt;a href="tg://user?id=123456789"&gt;mention user&lt;/a&gt;</b>
+Example: Hello <a href="tg://user?id=123456789">User</a>
+Copy: <code>&lt;a href="tg://user?id=USER_ID"&gt;User Name&lt;/a&gt;</code>
+
+<b>11. &lt;blockquote&gt;quoted text&lt;/blockquote&gt;</b>
+Example: <blockquote>This is a block quotation
+that can span multiple lines</blockquote>
+Copy: <code>&lt;blockquote&gt;Your quoted text here&lt;/blockquote&gt;</code>
+
+<b>12. &lt;blockquote expandable&gt;expandable quote&lt;/blockquote&gt;</b>
+Example: <blockquote expandable>This is an expandable quotation
+with hidden text by default</blockquote>
+Copy: <code>&lt;blockquote expandable&gt;Your expandable text&lt;/blockquote&gt;</code>
+
+<b>Nested Formatting Example:</b>
+<code>&lt;b&gt;bold &lt;i&gt;italic bold &lt;s&gt;italic bold strikethrough &lt;span class="tg-spoiler"&gt;italic bold strikethrough spoiler&lt;/span&gt;&lt;/s&gt; &lt;u&gt;underline italic bold&lt;/u&gt;&lt;/i&gt; bold&lt;/b&gt;</code>
+
+<b>Custom Emoji:</b>
+<code>&lt;tg-emoji emoji-id="5368324170671202286"&gt;👍&lt;/tg-emoji&gt;</code>
+
+<i>Note: When using HTML, make sure to escape &amp;, &lt;, &gt; characters as &amp;amp;, &amp;lt;, &amp;gt;</i>`;
+
+        const keyboard = [
+            [{ text: '📝 Try in Message', callback_data: 'admin_startmessage' }],
+            [{ text: '🔙 Back', callback_data: 'admin_messages_menu' }]
+        ];
+
+        await safeEditMessage(ctx, htmlGuide, {
+            reply_markup: { inline_keyboard: keyboard }
+        });
+    } catch (error) {
+        console.error('HTML guide error:', error);
         await safeSendMessage(ctx, '❌ An error occurred.');
     }
 });
 
 // ==========================================
-// ADMIN - DATA MENU
+// ADMIN FEATURES - DELETE DATA
 // ==========================================
 
-bot.action('admin_data_menu', async (ctx) => {
+bot.action('admin_deletedata', async (ctx) => {
     if (!await isAdmin(ctx.from.id)) return;
     
-    const text = '<b>🗑️ Data Management</b>\n\n⚠️ DANGER ZONE\n\nSelect what you want to delete:';
+    const text = '<b>⚠️ DANGER ZONE - DATA DELETION</b>\n\nSelect what you want to delete:\n\n<b>WARNING: These actions cannot be undone!</b>';
     
     const keyboard = [
-        [{ text: '🗑️ Delete All Users', callback_data: 'delete_all_users' }],
-        [{ text: '🗑️ Delete All Channels', callback_data: 'delete_all_channels' }],
-        [{ text: '🗑️ Delete All Tasks', callback_data: 'delete_all_tasks' }],
-        [{ text: '🗑️ Delete All Gift Codes', callback_data: 'delete_all_giftcodes' }],
+        [{ text: '🗑️ Delete All Users', callback_data: 'delete_all_users' }, { text: '🗑️ Delete All Channels', callback_data: 'delete_all_channels' }],
+        [{ text: '🗑️ Delete All Tasks', callback_data: 'delete_all_tasks' }, { text: '🗑️ Delete All Gift Codes', callback_data: 'delete_all_giftcodes' }],
         [{ text: '🔥 DELETE EVERYTHING', callback_data: 'delete_everything' }],
-        [{ text: '🔙 Back to Admin', callback_data: 'admin_back' }]
+        [{ text: '🔙 Back', callback_data: 'admin_tools_menu' }]
     ];
     
     await safeEditMessage(ctx, text, {
+        parse_mode: 'HTML',
         reply_markup: { inline_keyboard: keyboard }
     });
 });
 
 // ==========================================
-// BACK BUTTONS
+// ADMIN FEATURES - RESET ERRORS
 // ==========================================
 
-bot.action('admin_back', async (ctx) => {
+bot.action('admin_reset_errors', async (ctx) => {
     try {
-        await showAdminPanel(ctx);
+        if (!await isAdmin(ctx.from.id)) {
+            return;
+        }
+        
+        // Clear all error cooldowns
+        errorCooldowns.clear();
+        
+        // Also clear any stuck sessions
+        if (ctx.session) {
+            Object.keys(ctx.session).forEach(key => {
+                delete ctx.session[key];
+            });
+        }
+        
+        await ctx.answerCbQuery('✅ All error cooldowns and sessions have been reset!');
+        
     } catch (error) {
-        console.error('Back to admin error:', error);
+        console.error('Reset errors error:', error);
+        await ctx.answerCbQuery('❌ Failed to reset errors');
     }
 });
 
-bot.action('no_action', async (ctx) => {
-    await ctx.answerCbQuery();
+// ==========================================
+// CHAT JOIN REQUEST HANDLER
+// ==========================================
+
+bot.on('chat_join_request', async (ctx) => {
+    try {
+        const userId = ctx.chatJoinRequest.from.id;
+        const chatId = ctx.chatJoinRequest.chat.id;
+        const errorKey = `join_request_${userId}_${chatId}`;
+        
+        if (!canProcessError(errorKey, 2, 60000)) {
+            console.log(`⏸️ Skipping join request due to error cooldown: ${errorKey}`);
+            return;
+        }
+        
+        console.log(`📨 Join request from user ${userId} for chat ${chatId}`);
+        
+        // Get config to check settings
+        const config = await db.collection('admin').findOne({ type: 'config' });
+        const channels = config?.channels || [];
+        
+        // Check global auto accept setting
+        const globalAutoAccept = config?.autoAcceptRequests !== false;
+        
+        // Check if this chat is in our channel list
+        const channel = channels.find(ch => String(ch.id) === String(chatId));
+        
+        if (channel) {
+            // Check if auto accept is enabled for this channel
+            let shouldAccept = globalAutoAccept;
+            let shouldNotify = true;
+            
+            // For private channels, check channel-specific setting
+            if (channel.type === 'private') {
+                const channelAutoAccept = channel.autoAccept !== false;
+                shouldAccept = globalAutoAccept && channelAutoAccept;
+                
+                // If auto-accept is disabled for this private channel, don't notify admin
+                if (!channelAutoAccept) {
+                    shouldNotify = false;
+                    console.log(`🔕 Silent join request for private channel "${channel.title}" (Auto-accept disabled)`);
+                }
+            } else {
+                // Public channels don't need approval
+                shouldAccept = false;
+                shouldNotify = true;
+            }
+            
+            if (shouldAccept) {
+                try {
+                    // First check if user is already a member
+                    try {
+                        const member = await bot.telegram.getChatMember(chatId, userId);
+                        if (member.status !== 'left' && member.status !== 'kicked') {
+                            console.log(`✅ User ${userId} is already a member of "${channel.title}" - skipping approval`);
+                            return;
+                        }
+                    } catch (checkError) {
+                        console.log(`⚠️ Could not check membership for user ${userId}:`, checkError.message);
+                    }
+                    
+                    // If not already a member, proceed with approval
+                    await bot.telegram.approveChatJoinRequest(chatId, userId);
+                    console.log(`✅ Approved join request for user ${userId} in channel ${channel.title}`);
+                    
+                    // Notify admin (excluding muted admins)
+                    if (shouldNotify) {
+                        await notifyAdmin(`✅ <b>Join Request Auto-Approved</b>\n\n👤 User: ${userId}\n📺 Channel: ${channel.title}\n🔗 Type: ${channel.type}\n⚙️ Auto-accept: Enabled`);
+                    }
+                    
+                } catch (error) {
+                    console.error(`❌ Failed to approve join request for user ${userId}:`, error.message);
+                    
+                    // Check if error is "USER_ALREADY_PARTICIPANT" - this is not a real error
+                    if (error.message.includes('USER_ALREADY_PARTICIPANT')) {
+                        console.log(`✅ User ${userId} is already a member of "${channel.title}"`);
+                        resetErrorCooldown(errorKey);
+                    } else {
+                        const canNotify = canProcessError(`notify_${errorKey}`, 1, 300000);
+                        if (canNotify && shouldNotify) {
+                            await notifyAdmin(`❌ <b>Join Request Failed</b>\n\n👤 User: ${userId}\n📺 Channel: ${channel.title}\n❌ Error: ${error.message}\n\n⚠️ Will retry up to 2 times`);
+                        }
+                    }
+                }
+                
+            } else {
+                console.log(`⏸️ Join request not auto-approved for user ${userId} in channel ${channel.title}`);
+                
+                // Only notify admin if shouldNotify is true (excluding muted admins)
+                if (shouldNotify) {
+                    await notifyAdmin(`⏸️ <b>Join Request Pending</b>\n\n👤 User: ${userId}\n📺 Channel: ${channel.title}\n🔗 Type: ${channel.type}\n⚙️ Auto-accept: Disabled\n\n⚠️ Manual approval required`);
+                }
+            }
+        } else {
+            console.log(`⚠️ Join request for unknown chat ${chatId}`);
+        }
+    } catch (error) {
+        console.error('Error in chat join request handler:', error);
+    }
 });
 
 // ==========================================
@@ -3633,6 +6825,7 @@ bot.action('no_action', async (ctx) => {
 bot.catch((error, ctx) => {
     console.error('Bot error:', error);
     
+    // Store error for reporting
     if (ctx.session) {
         ctx.session.lastError = {
             command: ctx.message?.text || 'Unknown',
@@ -3643,10 +6836,10 @@ bot.catch((error, ctx) => {
     
     try {
         if (ctx.message) {
-            safeSendMessage(ctx, '❌ An error occurred.', {
+            safeSendMessage(ctx, '❌ An error occurred. Please try again.', {
                 reply_markup: {
                     inline_keyboard: [[
-                        { text: '📞 Contact Admin', callback_data: 'contact_admin' },
+                        { text: '📞 Contact Admin', callback_data: 'contact_support' },
                         { text: '🔄 Try Again', callback_data: 'back_to_start' }
                     ]]
                 }
@@ -3658,15 +6851,51 @@ bot.catch((error, ctx) => {
 });
 
 // ==========================================
+// GLOBAL ERROR PROTECTION
+// ==========================================
+
+let errorCount = 0;
+const MAX_ERRORS_BEFORE_RESTART = 10;
+const ERROR_RESET_INTERVAL = 60000;
+
+// Monitor error frequency
+const originalErrorHandler = bot.catch;
+bot.catch = (error, ctx) => {
+    errorCount++;
+    console.error(`🔴 Global Error #${errorCount}:`, error.message);
+    
+    // Reset error count periodically
+    setTimeout(() => {
+        if (errorCount > 0) errorCount--;
+    }, ERROR_RESET_INTERVAL);
+    
+    // If too many errors, suggest restart
+    if (errorCount >= MAX_ERRORS_BEFORE_RESTART) {
+        console.error('🚨 CRITICAL: Too many errors, bot may be stuck');
+        
+        // Notify admins (excluding muted ones)
+        notifyAdmin(`🚨 <b>Bot Error Alert</b>\n\nToo many errors detected (${errorCount}).\nBot may be stuck in error loop.\n\nUse /admin to access admin panel and check status.`);
+    }
+    
+    // Call original handler
+    if (originalErrorHandler) {
+        originalErrorHandler(error, ctx);
+    }
+};
+
+// ==========================================
 // START BOT
 // ==========================================
 
 async function startBot() {
     try {
+        console.log('🚀 Starting bot...');
+        
         // Connect to database
         const dbConnected = await connectDB();
         if (!dbConnected) {
             console.error('❌ Failed to connect to database');
+            // Try to reconnect
             setTimeout(startBot, 5000);
             return;
         }
@@ -3683,6 +6912,7 @@ async function startBot() {
                 'chat_join_request'
             ]
         });
+        
         console.log('🤖 Bot is running...');
         
         // Enable graceful stop
@@ -3700,9 +6930,23 @@ async function startBot() {
             process.exit(0);
         });
         
-        // Send a test message
+        // Send a test message to verify bot is working
+        const testAdminId = 8435248854;
         try {
-            await bot.telegram.sendMessage(ADMIN_IDS[0], '🤖 Earning Bot started successfully!\n\nFeatures:\n• Refer & Earn System\n• Task Management\n• Withdrawal System\n• Gift Codes\n• Channel Verification');
+            await bot.telegram.sendMessage(testAdminId, 
+                '🤖 *Bot Started Successfully!*\n\n' +
+                '💰 *Earning Bot Features:*\n' +
+                '• User Registration & Verification\n' +
+                '• Channel Management with Levels\n' +
+                '• Task System with Approval\n' +
+                '• Referral System\n' +
+                '• Gift Codes\n' +
+                '• Withdrawal System\n' +
+                '• Bonus System\n' +
+                '• Admin Panel with Full Control\n\n' +
+                '🚀 Bot is ready to earn!',
+                { parse_mode: 'HTML' }
+            );
             console.log('✅ Test message sent to admin');
         } catch (error) {
             console.log('⚠️ Could not send test message, but bot is running');
@@ -3710,13 +6954,13 @@ async function startBot() {
         
     } catch (error) {
         console.error('❌ Failed to start bot:', error);
+        // Try to restart after delay
         setTimeout(startBot, 10000);
     }
 }
 
 // Start the bot
 startBot();
-console.log('🚀 Bot Starting...');
 
 // Handle Railway port binding
 const PORT = process.env.PORT || 3000;
@@ -3724,10 +6968,12 @@ if (process.env.RAILWAY_ENVIRONMENT || process.env.PORT) {
     const http = require('http');
     const server = http.createServer((req, res) => {
         res.writeHead(200, { 'Content-Type': 'text/plain' });
-        res.end('Earning Bot is running...');
+        res.end('🤖 Earning Bot is running...');
     });
     
     server.listen(PORT, () => {
         console.log(`🚂 Server listening on port ${PORT}`);
     });
 }
+
+console.log('🚀 Earning Bot Starting...');
