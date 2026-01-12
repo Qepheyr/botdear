@@ -1,0 +1,25 @@
+{
+  "name": "telegram-referral-bot",
+  "version": "2.0.0",
+  "description": "A complete referral and earning Telegram bot",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "dev": "nodemon index.js"
+  },
+  "dependencies": {
+    "telegraf": "^4.15.3",
+    "mongodb": "^5.8.0",
+    "cloudinary": "^1.41.3",
+    "node-fetch": "^2.7.0",
+    "dotenv": "^16.3.1",
+    "sharp": "^0.33.2",
+    "canvas": "^2.11.2"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.1"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
